@@ -1,0 +1,67 @@
+# OS / filesystem
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Root env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Coverage / reports
+coverage/
+*.lcov
+
+# Archives / temp
+tmp/
+temp/
+*.tmp
+
+# Go backend
+backend/.env
+backend/bin/
+backend/tmp/
+backend/coverage.out
+backend/coverage.txt
+backend/*.test
+backend/*.out
+
+# Next.js / Node frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/.env.*.local
+frontend/coverage/
+frontend/.npm/
+
+# Package manager artifacts
+package-lock.json.*
+pnpm-lock.yaml.*
+yarn.lock.*
+
+# Misc generated assets
+*.pid
+*.seed
