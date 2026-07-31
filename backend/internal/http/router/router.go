@@ -19,10 +19,25 @@ func New(cfg config.Config) (http.Handler, error) {
 
 	healthHandler := handlers.NewHealthHandler(cfg)
 	authHandler := handlers.NewAuthHandler(authService)
+	accessHandler := handlers.NewAccessHandler()
 
 	mux.Handle("GET /health", healthHandler)
 	mux.HandleFunc("POST /auth/login", authHandler.Login)
 	mux.Handle("GET /auth/me", httpmiddleware.RequireAuth(authService, http.HandlerFunc(authHandler.Me)))
+	mux.Handle(
+		"GET /access/admin",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(accessHandler.AdminOnly), auth.RoleAdmin),
+		),
+	)
+	mux.Handle(
+		"GET /access/assignee",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(accessHandler.AssigneeOnly), auth.RoleAssignee),
+		),
+	)
 
 	return mux, nil
 }

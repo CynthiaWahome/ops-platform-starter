@@ -45,6 +45,16 @@ func (p Principal) HasRole(role Role) bool {
 	return false
 }
 
+func (p Principal) HasAnyRole(roles ...Role) bool {
+	for _, role := range roles {
+		if p.HasRole(role) {
+			return true
+		}
+	}
+
+	return false
+}
+
 type Session struct {
 	AccessToken string    `json:"accessToken"`
 	ExpiresAt   time.Time `json:"expiresAt"`
