@@ -65,6 +65,107 @@ func TestAssigneeProbeAllowsAssigneeAndRejectsAdmin(t *testing.T) {
 	}
 }
 
+func TestAdminWorkItemCRUDFlow(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+
+	createBody := bytes.NewBufferString(`{"title":"Gate repaint","description":"Repaint estate gate","priority":"high"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, createRec.Code)
+	}
+
+	type workItemResponse struct {
+		ID            string `json:"id"`
+		ReferenceCode string `json:"referenceCode"`
+		Title         string `json:"title"`
+		Description   string `json:"description"`
+		Priority      string `json:"priority"`
+		Status        string `json:"status"`
+	}
+
+	var created workItemResponse
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected created work item response to decode, got error: %v", err)
+	}
+
+	if created.ID == "" {
+		t.Fatal("expected created work item id")
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/workitems", nil)
+	listReq.Header.Set("Authorization", "Bearer "+adminToken)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listRec.Code)
+	}
+
+	var listed []workItemResponse
+	if err := json.NewDecoder(listRec.Body).Decode(&listed); err != nil {
+		t.Fatalf("expected listed work items response to decode, got error: %v", err)
+	}
+
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 listed work item, got %d", len(listed))
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created.ID, nil)
+	getReq.Header.Set("Authorization", "Bearer "+adminToken)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected get status %d, got %d", http.StatusOK, getRec.Code)
+	}
+
+	updateBody := bytes.NewBufferString(`{"title":"Updated gate repaint","priority":"medium"}`)
+	updateReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created.ID, updateBody)
+	updateReq.Header.Set("Authorization", "Bearer "+adminToken)
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRec := httptest.NewRecorder()
+	handler.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected update status %d, got %d", http.StatusOK, updateRec.Code)
+	}
+
+	var updated workItemResponse
+	if err := json.NewDecoder(updateRec.Body).Decode(&updated); err != nil {
+		t.Fatalf("expected updated work item response to decode, got error: %v", err)
+	}
+
+	if updated.Title != "Updated gate repaint" {
+		t.Fatalf("expected updated title %q, got %q", "Updated gate repaint", updated.Title)
+	}
+}
+
+func TestAssigneeCannotCreateWorkItem(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	createBody := bytes.NewBufferString(`{"title":"Gate repaint","description":"Repaint estate gate","priority":"high"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusForbidden {
+		t.Fatalf("expected create status %d, got %d", http.StatusForbidden, createRec.Code)
+	}
+}
+
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
