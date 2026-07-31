@@ -12,14 +12,19 @@ type Server struct {
 	httpServer *http.Server
 }
 
-func New(cfg config.Config) Server {
+func New(cfg config.Config) (Server, error) {
+	handler, err := router.New(cfg)
+	if err != nil {
+		return Server{}, err
+	}
+
 	return Server{
 		httpServer: &http.Server{
 			Addr:              ":" + cfg.Port,
-			Handler:           router.New(cfg),
+			Handler:           handler,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-	}
+	}, nil
 }
 
 func (s Server) Start() error {
