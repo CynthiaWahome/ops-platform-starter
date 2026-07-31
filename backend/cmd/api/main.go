@@ -10,7 +10,10 @@ import (
 func main() {
 	cfg := config.Load()
 
-	srv := server.New(cfg)
+	srv, err := server.New(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	log.Printf("starting ops-platform-starter backend on :%s in %s mode", cfg.Port, cfg.AppEnv)
 
