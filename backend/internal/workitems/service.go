@@ -7,16 +7,18 @@ import (
 )
 
 type Service struct {
-	store        Store
-	historyStore StatusHistoryStore
-	now          func() time.Time
+	store           Store
+	historyStore    StatusHistoryStore
+	assignmentStore AssignmentStore
+	now             func() time.Time
 }
 
-func NewService(store Store, historyStore StatusHistoryStore) Service {
+func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore) Service {
 	return Service{
-		store:        store,
-		historyStore: historyStore,
-		now:          time.Now,
+		store:           store,
+		historyStore:    historyStore,
+		assignmentStore: assignmentStore,
+		now:             time.Now,
 	}
 }
 
@@ -160,27 +162,36 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 		return WorkItem{}, err
 	}
 
+	if err := s.recordStatusChange(ctx, id, fromStatus, input.ToStatus, actorUserID, input.Reason, now); err != nil {
+		return WorkItem{}, err
+	}
+
+	return updated, nil
+}
+
+// recordStatusChange writes one StatusHistory entry. It is the single place
+// that turns a status move into a history row, so ChangeStatus and
+// AssignWorkItem (which also moves a status, from Created to Assigned)
+// don't each keep their own copy of this logic.
+func (s Service) recordStatusChange(ctx context.Context, workItemID string, from, to Status, actorUserID string, rawReason *string, at time.Time) error {
 	var reason *string
-	if input.Reason != nil {
-		trimmed := strings.TrimSpace(*input.Reason)
+	if rawReason != nil {
+		trimmed := strings.TrimSpace(*rawReason)
 		if trimmed != "" {
 			reason = &trimmed
 		}
 	}
 
-	_, err = s.historyStore.Create(ctx, StatusHistory{
-		WorkItemID:      id,
-		FromStatus:      &fromStatus,
-		ToStatus:        input.ToStatus,
+	_, err := s.historyStore.Create(ctx, StatusHistory{
+		WorkItemID:      workItemID,
+		FromStatus:      &from,
+		ToStatus:        to,
 		ChangedByUserID: actorUserID,
 		Reason:          reason,
-		CreatedAt:       now,
+		CreatedAt:       at,
 	})
-	if err != nil {
-		return WorkItem{}, err
-	}
 
-	return updated, nil
+	return err
 }
 
 // ListStatusHistory returns every status change recorded for a work item,
@@ -197,6 +208,67 @@ func (s Service) ListStatusHistory(ctx context.Context, workItemID string) ([]St
 	}
 
 	return s.historyStore.ListByWorkItemID(ctx, workItemID)
+}
+
+// AssignWorkItem gives a work item to an assignee. It reuses the same
+// status-transition rules as ChangeStatus: a work item can only move into
+// StatusAssigned from a status that already allows it (StatusCreated), so
+// a work item that has already been assigned, or moved further along, is
+// rejected by the same IsValidTransition check rather than a new rule.
+func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, input AssignInput) (Assignment, error) {
+	assignedToUserID := strings.TrimSpace(input.AssignedToUserID)
+
+	if strings.TrimSpace(workItemID) == "" || strings.TrimSpace(assignedByUserID) == "" || assignedToUserID == "" {
+		return Assignment{}, ErrInvalidInput
+	}
+
+	item, err := s.store.GetByID(ctx, workItemID)
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	if !IsValidTransition(item.Status, StatusAssigned) {
+		return Assignment{}, ErrInvalidTransition
+	}
+
+	fromStatus := item.Status
+	now := s.now()
+
+	item.Status = StatusAssigned
+	item.AssignedToUserID = &assignedToUserID
+	item.UpdatedAt = now
+
+	if _, err := s.store.Update(ctx, item); err != nil {
+		return Assignment{}, err
+	}
+
+	if err := s.recordStatusChange(ctx, workItemID, fromStatus, StatusAssigned, assignedByUserID, nil, now); err != nil {
+		return Assignment{}, err
+	}
+
+	return s.assignmentStore.Create(ctx, Assignment{
+		WorkItemID:       workItemID,
+		AssignedByUserID: assignedByUserID,
+		AssignedToUserID: assignedToUserID,
+		Status:           AssignmentStatusAssigned,
+		AssignedAt:       now,
+	})
+}
+
+// GetAssignment returns the current assignment for a work item. It confirms
+// the work item exists first, so a bad work item id and a work item that
+// has never been assigned come back as two distinguishable errors instead
+// of both looking like "not found" for the same reason.
+func (s Service) GetAssignment(ctx context.Context, workItemID string) (Assignment, error) {
+	if strings.TrimSpace(workItemID) == "" {
+		return Assignment{}, ErrInvalidInput
+	}
+
+	if _, err := s.store.GetByID(ctx, workItemID); err != nil {
+		return Assignment{}, err
+	}
+
+	return s.assignmentStore.GetByWorkItemID(ctx, workItemID)
 }
 
 func (s Service) WithClock(now func() time.Time) Service {

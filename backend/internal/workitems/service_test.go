@@ -10,7 +10,7 @@ import (
 func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore()).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore()).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 17, 30, 0, 0, time.UTC)
 	})
 
@@ -39,7 +39,7 @@ func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore())
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
 
 	_, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -54,7 +54,7 @@ func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 func TestServiceUpdateChangesEditableFields(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore()).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore()).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 18, 0, 0, 0, time.UTC)
 	})
 
@@ -90,7 +90,7 @@ func TestServiceUpdateChangesEditableFields(t *testing.T) {
 func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore()).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore()).WithClock(func() time.Time {
 		return time.Date(2026, time.August, 5, 9, 0, 0, 0, time.UTC)
 	})
 
@@ -148,7 +148,7 @@ func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore())
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -164,5 +164,125 @@ func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("expected invalid transition error, got %v", err)
+	}
+}
+
+func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore()).WithClock(func() time.Time {
+		return time.Date(2026, time.August, 5, 10, 0, 0, 0, time.UTC)
+	})
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	assignment, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	})
+	if err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	if assignment.WorkItemID != item.ID {
+		t.Fatalf("expected assignment work item id %q, got %q", item.ID, assignment.WorkItemID)
+	}
+
+	if assignment.AssignedToUserID != "user-assignee-001" {
+		t.Fatalf("expected assigned to user-assignee-001, got %q", assignment.AssignedToUserID)
+	}
+
+	if assignment.Status != AssignmentStatusAssigned {
+		t.Fatalf("expected assignment status %q, got %q", AssignmentStatusAssigned, assignment.Status)
+	}
+
+	updated, err := service.GetByID(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("expected get by id to succeed, got error: %v", err)
+	}
+
+	if updated.Status != StatusAssigned {
+		t.Fatalf("expected work item status %q, got %q", StatusAssigned, updated.Status)
+	}
+
+	if updated.AssignedToUserID == nil || *updated.AssignedToUserID != "user-assignee-001" {
+		t.Fatalf("expected work item assignedToUserId to be set, got %v", updated.AssignedToUserID)
+	}
+
+	history, err := service.ListStatusHistory(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("expected history lookup to succeed, got error: %v", err)
+	}
+
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry from assignment, got %d", len(history))
+	}
+
+	if history[0].ToStatus != StatusAssigned {
+		t.Fatalf("expected history entry to status %q, got %q", StatusAssigned, history[0].ToStatus)
+	}
+
+	fetched, err := service.GetAssignment(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("expected get assignment to succeed, got error: %v", err)
+	}
+
+	if fetched.AssignedToUserID != "user-assignee-001" {
+		t.Fatalf("expected fetched assignment assignedToUserId user-assignee-001, got %q", fetched.AssignedToUserID)
+	}
+}
+
+func TestServiceAssignWorkItemRejectsSecondAssignment(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	})
+	if err != nil {
+		t.Fatalf("expected first assign to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-002",
+	})
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected invalid transition error on second assignment, got %v", err)
+	}
+}
+
+func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.GetAssignment(context.Background(), item.ID)
+	if !errors.Is(err, ErrAssignmentNotFound) {
+		t.Fatalf("expected assignment not found error, got %v", err)
 	}
 }

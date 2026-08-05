@@ -150,6 +150,57 @@ func (h WorkItemHandler) ListStatusHistory(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, history)
 }
 
+func (h WorkItemHandler) Assign(w http.ResponseWriter, r *http.Request) {
+	var input workitems.AssignInput
+
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	assignment, err := h.service.AssignWorkItem(r.Context(), r.PathValue("id"), principal.UserID, input)
+	if err != nil {
+		switch {
+		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to assign work item"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, assignment)
+}
+
+func (h WorkItemHandler) GetAssignment(w http.ResponseWriter, r *http.Request) {
+	assignment, err := h.service.GetAssignment(r.Context(), r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, workitems.ErrInvalidInput):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
+		case errors.Is(err, workitems.ErrAssignmentNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "assignment not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to fetch assignment"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, assignment)
+}
+
 func decodeJSON(r *http.Request, target any) error {
 	defer r.Body.Close()
 

@@ -207,6 +207,95 @@ func TestAdminWorkItemCRUDFlow(t *testing.T) {
 	}
 }
 
+func TestAdminAssignmentFlow(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+
+	createBody := bytes.NewBufferString(`{"title":"Fence repair","description":"Repair the perimeter fence","priority":"medium"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, createRec.Code)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected created work item response to decode, got error: %v", err)
+	}
+
+	assignBody := bytes.NewBufferString(`{"assignedToUserId":"user-assignee-001"}`)
+	assignReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created.ID+"/assignment", assignBody)
+	assignReq.Header.Set("Authorization", "Bearer "+adminToken)
+	assignReq.Header.Set("Content-Type", "application/json")
+	assignRec := httptest.NewRecorder()
+	handler.ServeHTTP(assignRec, assignReq)
+
+	if assignRec.Code != http.StatusCreated {
+		t.Fatalf("expected assign status %d, got %d", http.StatusCreated, assignRec.Code)
+	}
+
+	type assignmentResponse struct {
+		WorkItemID       string `json:"workItemId"`
+		AssignedToUserID string `json:"assignedToUserId"`
+		Status           string `json:"status"`
+	}
+
+	var assigned assignmentResponse
+	if err := json.NewDecoder(assignRec.Body).Decode(&assigned); err != nil {
+		t.Fatalf("expected assignment response to decode, got error: %v", err)
+	}
+
+	if assigned.AssignedToUserID != "user-assignee-001" {
+		t.Fatalf("expected assignedToUserId user-assignee-001, got %q", assigned.AssignedToUserID)
+	}
+
+	if assigned.Status != "assigned" {
+		t.Fatalf("expected assignment status %q, got %q", "assigned", assigned.Status)
+	}
+
+	getAssignmentReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created.ID+"/assignment", nil)
+	getAssignmentReq.Header.Set("Authorization", "Bearer "+adminToken)
+	getAssignmentRec := httptest.NewRecorder()
+	handler.ServeHTTP(getAssignmentRec, getAssignmentReq)
+
+	if getAssignmentRec.Code != http.StatusOK {
+		t.Fatalf("expected get assignment status %d, got %d", http.StatusOK, getAssignmentRec.Code)
+	}
+
+	var fetched assignmentResponse
+	if err := json.NewDecoder(getAssignmentRec.Body).Decode(&fetched); err != nil {
+		t.Fatalf("expected fetched assignment response to decode, got error: %v", err)
+	}
+
+	if fetched.WorkItemID != created.ID {
+		t.Fatalf("expected fetched assignment work item id %q, got %q", created.ID, fetched.WorkItemID)
+	}
+
+	getWorkItemReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created.ID, nil)
+	getWorkItemReq.Header.Set("Authorization", "Bearer "+adminToken)
+	getWorkItemRec := httptest.NewRecorder()
+	handler.ServeHTTP(getWorkItemRec, getWorkItemReq)
+
+	var workItemAfterAssign struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(getWorkItemRec.Body).Decode(&workItemAfterAssign); err != nil {
+		t.Fatalf("expected work item response to decode, got error: %v", err)
+	}
+
+	if workItemAfterAssign.Status != "assigned" {
+		t.Fatalf("expected work item status %q after assignment, got %q", "assigned", workItemAfterAssign.Status)
+	}
+}
+
 func TestAssigneeCannotCreateWorkItem(t *testing.T) {
 	t.Parallel()
 
