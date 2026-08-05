@@ -7,9 +7,11 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("work item not found")
-	ErrInvalidInput    = errors.New("invalid work item input")
-	ErrInvalidPriority = errors.New("invalid work item priority")
+	ErrNotFound          = errors.New("work item not found")
+	ErrInvalidInput      = errors.New("invalid work item input")
+	ErrInvalidPriority   = errors.New("invalid work item priority")
+	ErrInvalidStatus     = errors.New("invalid work item status")
+	ErrInvalidTransition = errors.New("status transition not allowed")
 )
 
 type Status string
@@ -76,6 +78,24 @@ type UpdateInput struct {
 	Priority     *Priority  `json:"priority,omitempty"`
 	LocationText *string    `json:"locationText,omitempty"`
 	DueAt        *time.Time `json:"dueAt,omitempty"`
+}
+
+// StatusHistory records one status change on a work item. FromStatus is
+// nil for the very first entry, since a brand new work item has no
+// previous status to record.
+type StatusHistory struct {
+	ID              string    `json:"id"`
+	WorkItemID      string    `json:"workItemId"`
+	FromStatus      *Status   `json:"fromStatus,omitempty"`
+	ToStatus        Status    `json:"toStatus"`
+	ChangedByUserID string    `json:"changedByUserId"`
+	Reason          *string   `json:"reason,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+}
+
+type ChangeStatusInput struct {
+	ToStatus Status  `json:"toStatus"`
+	Reason   *string `json:"reason,omitempty"`
 }
 
 func (p Priority) IsValid() bool {

@@ -146,6 +146,65 @@ func TestAdminWorkItemCRUDFlow(t *testing.T) {
 	if updated.Title != "Updated gate repaint" {
 		t.Fatalf("expected updated title %q, got %q", "Updated gate repaint", updated.Title)
 	}
+
+	statusBody := bytes.NewBufferString(`{"toStatus":"assigned","reason":"assigned to on-call crew"}`)
+	statusReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created.ID+"/status", statusBody)
+	statusReq.Header.Set("Authorization", "Bearer "+adminToken)
+	statusReq.Header.Set("Content-Type", "application/json")
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected status change status %d, got %d", http.StatusOK, statusRec.Code)
+	}
+
+	var statusChanged workItemResponse
+	if err := json.NewDecoder(statusRec.Body).Decode(&statusChanged); err != nil {
+		t.Fatalf("expected status change response to decode, got error: %v", err)
+	}
+
+	if statusChanged.Status != "assigned" {
+		t.Fatalf("expected status %q, got %q", "assigned", statusChanged.Status)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created.ID+"/history", nil)
+	historyReq.Header.Set("Authorization", "Bearer "+adminToken)
+	historyRec := httptest.NewRecorder()
+	handler.ServeHTTP(historyRec, historyReq)
+
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("expected history status %d, got %d", http.StatusOK, historyRec.Code)
+	}
+
+	type statusHistoryResponse struct {
+		FromStatus      *string `json:"fromStatus"`
+		ToStatus        string  `json:"toStatus"`
+		ChangedByUserID string  `json:"changedByUserId"`
+		Reason          *string `json:"reason"`
+	}
+
+	var history []statusHistoryResponse
+	if err := json.NewDecoder(historyRec.Body).Decode(&history); err != nil {
+		t.Fatalf("expected history response to decode, got error: %v", err)
+	}
+
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+
+	entry := history[0]
+
+	if entry.FromStatus == nil || *entry.FromStatus != "created" {
+		t.Fatalf("expected from status %q, got %v", "created", entry.FromStatus)
+	}
+
+	if entry.ToStatus != "assigned" {
+		t.Fatalf("expected to status %q, got %q", "assigned", entry.ToStatus)
+	}
+
+	if entry.Reason == nil || *entry.Reason != "assigned to on-call crew" {
+		t.Fatalf("expected reason to be recorded, got %v", entry.Reason)
+	}
 }
 
 func TestAssigneeCannotCreateWorkItem(t *testing.T) {
