@@ -7,11 +7,12 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("work item not found")
-	ErrInvalidInput      = errors.New("invalid work item input")
-	ErrInvalidPriority   = errors.New("invalid work item priority")
-	ErrInvalidStatus     = errors.New("invalid work item status")
-	ErrInvalidTransition = errors.New("status transition not allowed")
+	ErrNotFound           = errors.New("work item not found")
+	ErrInvalidInput       = errors.New("invalid work item input")
+	ErrInvalidPriority    = errors.New("invalid work item priority")
+	ErrInvalidStatus      = errors.New("invalid work item status")
+	ErrInvalidTransition  = errors.New("status transition not allowed")
+	ErrAssignmentNotFound = errors.New("assignment not found")
 )
 
 type Status string
@@ -96,6 +97,32 @@ type StatusHistory struct {
 type ChangeStatusInput struct {
 	ToStatus Status  `json:"toStatus"`
 	Reason   *string `json:"reason,omitempty"`
+}
+
+type AssignmentStatus string
+
+const (
+	AssignmentStatusAssigned AssignmentStatus = "assigned"
+)
+
+// Assignment represents the act of giving a work item to an assignee. It is
+// kept separate from WorkItem because assignment has its own lifecycle
+// (assigned -> accepted/declined) that should not be flattened into the
+// work item row. RespondedAt and ResponseNote stay nil until the assignee
+// responds, which is OPS-023's job, not this slice's.
+type Assignment struct {
+	ID               string           `json:"id"`
+	WorkItemID       string           `json:"workItemId"`
+	AssignedByUserID string           `json:"assignedByUserId"`
+	AssignedToUserID string           `json:"assignedToUserId"`
+	Status           AssignmentStatus `json:"status"`
+	AssignedAt       time.Time        `json:"assignedAt"`
+	RespondedAt      *time.Time       `json:"respondedAt,omitempty"`
+	ResponseNote     *string          `json:"responseNote,omitempty"`
+}
+
+type AssignInput struct {
+	AssignedToUserID string `json:"assignedToUserId"`
 }
 
 func (p Priority) IsValid() bool {

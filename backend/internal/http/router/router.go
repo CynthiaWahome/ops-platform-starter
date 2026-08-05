@@ -17,7 +17,7 @@ func New(cfg config.Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	workItemService := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore())
+	workItemService := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore())
 
 	healthHandler := handlers.NewHealthHandler(cfg)
 	authHandler := handlers.NewAuthHandler(authService)
@@ -81,6 +81,20 @@ func New(cfg config.Config) (http.Handler, error) {
 		httpmiddleware.RequireAuth(
 			authService,
 			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListStatusHistory), auth.RoleAdmin),
+		),
+	)
+	mux.Handle(
+		"POST /workitems/{id}/assignment",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Assign), auth.RoleAdmin),
+		),
+	)
+	mux.Handle(
+		"GET /workitems/{id}/assignment",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetAssignment), auth.RoleAdmin),
 		),
 	)
 
