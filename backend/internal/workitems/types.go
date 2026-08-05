@@ -2,6 +2,7 @@ package workitems
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -14,8 +15,29 @@ var (
 type Status string
 
 const (
-	StatusCreated Status = "created"
+	StatusCreated            Status = "created"
+	StatusAssigned           Status = "assigned"
+	StatusAccepted           Status = "accepted"
+	StatusInProgress         Status = "in_progress"
+	StatusSubmittedForReview Status = "submitted_for_review"
+	StatusVerified           Status = "verified"
+	StatusFlagged            Status = "flagged"
+	StatusCompleted          Status = "completed"
+	StatusCancelled          Status = "cancelled"
 )
+
+// validStatusTransitions lists every status a work item may move to from a
+// given status. Completed and Cancelled are end states: they have no
+// outgoing entries, so nothing can move once a work item lands there.
+var validStatusTransitions = map[Status][]Status{
+	StatusCreated:            {StatusAssigned, StatusCancelled},
+	StatusAssigned:           {StatusAccepted, StatusCancelled},
+	StatusAccepted:           {StatusInProgress, StatusCancelled},
+	StatusInProgress:         {StatusSubmittedForReview, StatusCancelled},
+	StatusSubmittedForReview: {StatusVerified, StatusFlagged, StatusCancelled},
+	StatusVerified:           {StatusCompleted, StatusCancelled},
+	StatusFlagged:            {StatusInProgress, StatusCancelled},
+}
 
 type Priority string
 
@@ -63,4 +85,23 @@ func (p Priority) IsValid() bool {
 	default:
 		return false
 	}
+}
+
+func (s Status) IsValid() bool {
+	switch s {
+	case StatusCreated, StatusAssigned, StatusAccepted, StatusInProgress,
+		StatusSubmittedForReview, StatusVerified, StatusFlagged,
+		StatusCompleted, StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsValidTransition reports whether a work item is allowed to move from one
+// status to another. Completed and Cancelled are end states: there is no
+// entry for them in validStatusTransitions, so anything checked against them
+// as the "from" status correctly comes back false.
+func IsValidTransition(from, to Status) bool {
+	return slices.Contains(validStatusTransitions[from], to)
 }
