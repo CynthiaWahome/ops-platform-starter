@@ -7,6 +7,7 @@ import (
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/handlers"
 	httpmiddleware "github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/workitems"
 )
 
 func New(cfg config.Config) (http.Handler, error) {
@@ -16,10 +17,12 @@ func New(cfg config.Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	workItemService := workitems.NewService(workitems.NewMemoryStore())
 
 	healthHandler := handlers.NewHealthHandler(cfg)
 	authHandler := handlers.NewAuthHandler(authService)
 	accessHandler := handlers.NewAccessHandler()
+	workItemHandler := handlers.NewWorkItemHandler(workItemService)
 
 	mux.Handle("GET /health", healthHandler)
 	mux.HandleFunc("POST /auth/login", authHandler.Login)
@@ -36,6 +39,34 @@ func New(cfg config.Config) (http.Handler, error) {
 		httpmiddleware.RequireAuth(
 			authService,
 			httpmiddleware.RequireRoles(http.HandlerFunc(accessHandler.AssigneeOnly), auth.RoleAssignee),
+		),
+	)
+	mux.Handle(
+		"POST /workitems",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Create), auth.RoleAdmin),
+		),
+	)
+	mux.Handle(
+		"GET /workitems",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.List), auth.RoleAdmin),
+		),
+	)
+	mux.Handle(
+		"GET /workitems/{id}",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetByID), auth.RoleAdmin),
+		),
+	)
+	mux.Handle(
+		"PATCH /workitems/{id}",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Update), auth.RoleAdmin),
 		),
 	)
 
