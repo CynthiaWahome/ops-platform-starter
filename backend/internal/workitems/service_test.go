@@ -10,7 +10,7 @@ import (
 func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore()).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore()).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 17, 30, 0, 0, time.UTC)
 	})
 
@@ -39,7 +39,7 @@ func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore())
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore())
 
 	_, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -54,7 +54,7 @@ func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 func TestServiceUpdateChangesEditableFields(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore()).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore()).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 18, 0, 0, 0, time.UTC)
 	})
 
@@ -84,5 +84,85 @@ func TestServiceUpdateChangesEditableFields(t *testing.T) {
 
 	if updated.Priority != updatedPriority {
 		t.Fatalf("expected priority %q, got %q", updatedPriority, updated.Priority)
+	}
+}
+
+func TestServiceChangeStatusRecordsHistory(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore()).WithClock(func() time.Time {
+		return time.Date(2026, time.August, 5, 9, 0, 0, 0, time.UTC)
+	})
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	reason := "assigned to on-call crew"
+
+	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", ChangeStatusInput{
+		ToStatus: StatusAssigned,
+		Reason:   &reason,
+	})
+	if err != nil {
+		t.Fatalf("expected status change to succeed, got error: %v", err)
+	}
+
+	if updated.Status != StatusAssigned {
+		t.Fatalf("expected status %q, got %q", StatusAssigned, updated.Status)
+	}
+
+	history, err := service.ListStatusHistory(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("expected history lookup to succeed, got error: %v", err)
+	}
+
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+
+	entry := history[0]
+
+	if entry.FromStatus == nil || *entry.FromStatus != StatusCreated {
+		t.Fatalf("expected from status %q, got %v", StatusCreated, entry.FromStatus)
+	}
+
+	if entry.ToStatus != StatusAssigned {
+		t.Fatalf("expected to status %q, got %q", StatusAssigned, entry.ToStatus)
+	}
+
+	if entry.ChangedByUserID != "user-admin-001" {
+		t.Fatalf("expected changed by user-admin-001, got %q", entry.ChangedByUserID)
+	}
+
+	if entry.Reason == nil || *entry.Reason != reason {
+		t.Fatalf("expected reason %q, got %v", reason, entry.Reason)
+	}
+}
+
+func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.ChangeStatus(context.Background(), item.ID, "user-admin-001", ChangeStatusInput{
+		ToStatus: StatusCompleted,
+	})
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected invalid transition error, got %v", err)
 	}
 }

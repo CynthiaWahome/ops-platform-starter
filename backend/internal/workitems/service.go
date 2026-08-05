@@ -7,14 +7,16 @@ import (
 )
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store        Store
+	historyStore StatusHistoryStore
+	now          func() time.Time
 }
 
-func NewService(store Store) Service {
+func NewService(store Store, historyStore StatusHistoryStore) Service {
 	return Service{
-		store: store,
-		now:   time.Now,
+		store:        store,
+		historyStore: historyStore,
+		now:          time.Now,
 	}
 }
 
@@ -124,6 +126,77 @@ func (s Service) Update(ctx context.Context, id string, input UpdateInput) (Work
 	item.UpdatedAt = s.now()
 
 	return s.store.Update(ctx, item)
+}
+
+// ChangeStatus moves a work item to a new status, checks the move is legal,
+// saves the new status on the work item, and writes a StatusHistory entry
+// recording what changed, who changed it, and why.
+func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string, input ChangeStatusInput) (WorkItem, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(actorUserID) == "" {
+		return WorkItem{}, ErrInvalidInput
+	}
+
+	if !input.ToStatus.IsValid() {
+		return WorkItem{}, ErrInvalidStatus
+	}
+
+	item, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return WorkItem{}, err
+	}
+
+	if !IsValidTransition(item.Status, input.ToStatus) {
+		return WorkItem{}, ErrInvalidTransition
+	}
+
+	fromStatus := item.Status
+	now := s.now()
+
+	item.Status = input.ToStatus
+	item.UpdatedAt = now
+
+	updated, err := s.store.Update(ctx, item)
+	if err != nil {
+		return WorkItem{}, err
+	}
+
+	var reason *string
+	if input.Reason != nil {
+		trimmed := strings.TrimSpace(*input.Reason)
+		if trimmed != "" {
+			reason = &trimmed
+		}
+	}
+
+	_, err = s.historyStore.Create(ctx, StatusHistory{
+		WorkItemID:      id,
+		FromStatus:      &fromStatus,
+		ToStatus:        input.ToStatus,
+		ChangedByUserID: actorUserID,
+		Reason:          reason,
+		CreatedAt:       now,
+	})
+	if err != nil {
+		return WorkItem{}, err
+	}
+
+	return updated, nil
+}
+
+// ListStatusHistory returns every status change recorded for a work item,
+// oldest first. It confirms the work item exists before checking history so
+// callers get a consistent ErrNotFound instead of an empty list for a
+// missing id.
+func (s Service) ListStatusHistory(ctx context.Context, workItemID string) ([]StatusHistory, error) {
+	if strings.TrimSpace(workItemID) == "" {
+		return nil, ErrInvalidInput
+	}
+
+	if _, err := s.store.GetByID(ctx, workItemID); err != nil {
+		return nil, err
+	}
+
+	return s.historyStore.ListByWorkItemID(ctx, workItemID)
 }
 
 func (s Service) WithClock(now func() time.Time) Service {
