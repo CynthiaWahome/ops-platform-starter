@@ -202,7 +202,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 		t.Fatalf("expected assignment status %q, got %q", AssignmentStatusAssigned, assignment.Status)
 	}
 
-	updated, err := service.GetByID(context.Background(), item.ID)
+	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true)
 	if err != nil {
 		t.Fatalf("expected get by id to succeed, got error: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestServiceRespondToAssignmentAccept(t *testing.T) {
 		t.Fatalf("expected response note %q, got %v", note, assignment.ResponseNote)
 	}
 
-	updated, err := service.GetByID(context.Background(), item.ID)
+	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true)
 	if err != nil {
 		t.Fatalf("expected get by id to succeed, got error: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T)
 		t.Fatalf("expected assignment status %q, got %q", AssignmentStatusDeclined, assignment.Status)
 	}
 
-	updated, err := service.GetByID(context.Background(), item.ID)
+	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true)
 	if err != nil {
 		t.Fatalf("expected get by id to succeed, got error: %v", err)
 	}
@@ -445,5 +445,92 @@ func TestServiceRespondToAssignmentRejectsAlreadyRespondedTo(t *testing.T) {
 	_, err = service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", false, RespondToAssignmentInput{})
 	if !errors.Is(err, ErrAssignmentNotPending) {
 		t.Fatalf("expected assignment not pending error, got %v", err)
+	}
+}
+
+func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	itemA, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Fence repair", Description: "Repair the fence", Priority: PriorityLow,
+	}); err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(context.Background(), itemA.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	// itemB is deliberately left unassigned, so it should never appear in
+	// the assignee's scoped list.
+
+	adminList, err := service.List(context.Background(), "user-admin-001", true)
+	if err != nil {
+		t.Fatalf("expected admin list to succeed, got error: %v", err)
+	}
+
+	if len(adminList) != 2 {
+		t.Fatalf("expected admin to see 2 work items, got %d", len(adminList))
+	}
+
+	assigneeList, err := service.List(context.Background(), "user-assignee-001", false)
+	if err != nil {
+		t.Fatalf("expected assignee list to succeed, got error: %v", err)
+	}
+
+	if len(assigneeList) != 1 {
+		t.Fatalf("expected assignee to see 1 work item, got %d", len(assigneeList))
+	}
+
+	if assigneeList[0].ID != itemA.ID {
+		t.Fatalf("expected assignee's list to contain %q, got %q", itemA.ID, assigneeList[0].ID)
+	}
+}
+
+func TestServiceGetByIDHidesUnownedWorkItemFromAssignee(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	// The assigned user can see it.
+	if _, err := service.GetByID(context.Background(), item.ID, "user-assignee-001", false); err != nil {
+		t.Fatalf("expected assigned user to see the work item, got error: %v", err)
+	}
+
+	// A different assignee cannot — and gets ErrNotFound, not a forbidden
+	// error, so the response doesn't reveal that the id belongs to someone
+	// else.
+	_, err = service.GetByID(context.Background(), item.ID, "user-assignee-999", false)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found error for unowned work item, got %v", err)
+	}
+
+	// An admin can always see it.
+	if _, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true); err != nil {
+		t.Fatalf("expected admin to see the work item, got error: %v", err)
 	}
 }

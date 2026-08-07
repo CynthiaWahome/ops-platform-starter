@@ -453,6 +453,72 @@ func TestAssigneeCannotCreateWorkItem(t *testing.T) {
 	}
 }
 
+func TestAssigneeOnlySeesOwnAssignedWorkItems(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	assignedID := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	unassignedBody := bytes.NewBufferString(`{"title":"Unassigned job","description":"Not assigned to anyone","priority":"low"}`)
+	unassignedReq := httptest.NewRequest(http.MethodPost, "/workitems", unassignedBody)
+	unassignedReq.Header.Set("Authorization", "Bearer "+adminToken)
+	unassignedReq.Header.Set("Content-Type", "application/json")
+	unassignedRec := httptest.NewRecorder()
+	handler.ServeHTTP(unassignedRec, unassignedReq)
+
+	if unassignedRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, unassignedRec.Code)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/workitems", nil)
+	listReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listRec.Code)
+	}
+
+	var listed []struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listed); err != nil {
+		t.Fatalf("expected list response to decode, got error: %v", err)
+	}
+
+	if len(listed) != 1 || listed[0].ID != assignedID {
+		t.Fatalf("expected assignee's list to contain only %q, got %+v", assignedID, listed)
+	}
+
+	getOwnReq := httptest.NewRequest(http.MethodGet, "/workitems/"+assignedID, nil)
+	getOwnReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	getOwnRec := httptest.NewRecorder()
+	handler.ServeHTTP(getOwnRec, getOwnReq)
+
+	if getOwnRec.Code != http.StatusOK {
+		t.Fatalf("expected get own work item status %d, got %d", http.StatusOK, getOwnRec.Code)
+	}
+
+	var unassignedCreated struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(unassignedRec.Body).Decode(&unassignedCreated); err != nil {
+		t.Fatalf("expected unassigned create response to decode, got error: %v", err)
+	}
+
+	getUnownedReq := httptest.NewRequest(http.MethodGet, "/workitems/"+unassignedCreated.ID, nil)
+	getUnownedReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	getUnownedRec := httptest.NewRecorder()
+	handler.ServeHTTP(getUnownedRec, getUnownedReq)
+
+	if getUnownedRec.Code != http.StatusNotFound {
+		t.Fatalf("expected get unowned work item status %d, got %d", http.StatusNotFound, getUnownedRec.Code)
+	}
+}
+
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
