@@ -166,7 +166,14 @@ func (s Service) Update(ctx context.Context, id string, input UpdateInput) (Work
 // ChangeStatus moves a work item to a new status, checks the move is legal,
 // saves the new status on the work item, and writes a StatusHistory entry
 // recording what changed, who changed it, and why.
-func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string, input ChangeStatusInput) (WorkItem, error) {
+//
+// An admin caller may trigger any transition IsValidTransition allows. A
+// non-admin caller (an assignee) is restricted twice: the work item must
+// actually be assigned to them (ErrNotFound otherwise, same "acts as if it
+// doesn't exist" rule as GetByID), and the move itself must be one of the
+// few IsAssigneeAllowedTransition grants — issue #42, "start work" and
+// "submit progress update" from the permission matrix, nothing wider.
+func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string, actorIsAdmin bool, input ChangeStatusInput) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(actorUserID) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
@@ -180,7 +187,15 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 		return WorkItem{}, err
 	}
 
-	if !IsValidTransition(item.Status, input.ToStatus) {
+	if !actorIsAdmin {
+		if item.AssignedToUserID == nil || *item.AssignedToUserID != actorUserID {
+			return WorkItem{}, ErrNotFound
+		}
+
+		if !IsAssigneeAllowedTransition(item.Status, input.ToStatus) {
+			return WorkItem{}, ErrInvalidTransition
+		}
+	} else if !IsValidTransition(item.Status, input.ToStatus) {
 		return WorkItem{}, ErrInvalidTransition
 	}
 
@@ -230,14 +245,21 @@ func (s Service) recordStatusChange(ctx context.Context, workItemID string, from
 // ListStatusHistory returns every status change recorded for a work item,
 // oldest first. It confirms the work item exists before checking history so
 // callers get a consistent ErrNotFound instead of an empty list for a
-// missing id.
-func (s Service) ListStatusHistory(ctx context.Context, workItemID string) ([]StatusHistory, error) {
+// missing id. A non-admin caller only sees history for a work item assigned
+// to them — same ownership check and same ErrNotFound-not-forbidden shape
+// as GetByID.
+func (s Service) ListStatusHistory(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool) ([]StatusHistory, error) {
 	if strings.TrimSpace(workItemID) == "" {
 		return nil, ErrInvalidInput
 	}
 
-	if _, err := s.store.GetByID(ctx, workItemID); err != nil {
+	item, err := s.store.GetByID(ctx, workItemID)
+	if err != nil {
 		return nil, err
+	}
+
+	if !callerIsAdmin && (item.AssignedToUserID == nil || *item.AssignedToUserID != callerUserID) {
+		return nil, ErrNotFound
 	}
 
 	return s.historyStore.ListByWorkItemID(ctx, workItemID)
@@ -291,14 +313,20 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 // GetAssignment returns the current assignment for a work item. It confirms
 // the work item exists first, so a bad work item id and a work item that
 // has never been assigned come back as two distinguishable errors instead
-// of both looking like "not found" for the same reason.
-func (s Service) GetAssignment(ctx context.Context, workItemID string) (Assignment, error) {
+// of both looking like "not found" for the same reason. A non-admin caller
+// only sees the assignment for a work item assigned to them.
+func (s Service) GetAssignment(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool) (Assignment, error) {
 	if strings.TrimSpace(workItemID) == "" {
 		return Assignment{}, ErrInvalidInput
 	}
 
-	if _, err := s.store.GetByID(ctx, workItemID); err != nil {
+	item, err := s.store.GetByID(ctx, workItemID)
+	if err != nil {
 		return Assignment{}, err
+	}
+
+	if !callerIsAdmin && (item.AssignedToUserID == nil || *item.AssignedToUserID != callerUserID) {
+		return Assignment{}, ErrNotFound
 	}
 
 	return s.assignmentStore.GetByWorkItemID(ctx, workItemID)

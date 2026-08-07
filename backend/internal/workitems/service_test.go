@@ -105,7 +105,7 @@ func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 
 	reason := "assigned to on-call crew"
 
-	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", ChangeStatusInput{
+	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, ChangeStatusInput{
 		ToStatus: StatusAssigned,
 		Reason:   &reason,
 	})
@@ -117,7 +117,7 @@ func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 		t.Fatalf("expected status %q, got %q", StatusAssigned, updated.Status)
 	}
 
-	history, err := service.ListStatusHistory(context.Background(), item.ID)
+	history, err := service.ListStatusHistory(context.Background(), item.ID, "user-admin-001", true)
 	if err != nil {
 		t.Fatalf("expected history lookup to succeed, got error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.ChangeStatus(context.Background(), item.ID, "user-admin-001", ChangeStatusInput{
+	_, err = service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, ChangeStatusInput{
 		ToStatus: StatusCompleted,
 	})
 	if !errors.Is(err, ErrInvalidTransition) {
@@ -215,7 +215,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 		t.Fatalf("expected work item assignedToUserId to be set, got %v", updated.AssignedToUserID)
 	}
 
-	history, err := service.ListStatusHistory(context.Background(), item.ID)
+	history, err := service.ListStatusHistory(context.Background(), item.ID, "user-admin-001", true)
 	if err != nil {
 		t.Fatalf("expected history lookup to succeed, got error: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 		t.Fatalf("expected history entry to status %q, got %q", StatusAssigned, history[0].ToStatus)
 	}
 
-	fetched, err := service.GetAssignment(context.Background(), item.ID)
+	fetched, err := service.GetAssignment(context.Background(), item.ID, "user-admin-001", true)
 	if err != nil {
 		t.Fatalf("expected get assignment to succeed, got error: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.GetAssignment(context.Background(), item.ID)
+	_, err = service.GetAssignment(context.Background(), item.ID, "user-admin-001", true)
 	if !errors.Is(err, ErrAssignmentNotFound) {
 		t.Fatalf("expected assignment not found error, got %v", err)
 	}
@@ -532,5 +532,150 @@ func TestServiceGetByIDHidesUnownedWorkItemFromAssignee(t *testing.T) {
 	// An admin can always see it.
 	if _, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true); err != nil {
 		t.Fatalf("expected admin to see the work item, got error: %v", err)
+	}
+}
+
+func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	if _, err := service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", true, RespondToAssignmentInput{}); err != nil {
+		t.Fatalf("expected accept to succeed, got error: %v", err)
+	}
+
+	// The assignee can start work (accepted -> in_progress) on their own
+	// item, as a non-admin caller.
+	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+		ToStatus: StatusInProgress,
+	})
+	if err != nil {
+		t.Fatalf("expected assignee to start work, got error: %v", err)
+	}
+
+	if updated.Status != StatusInProgress {
+		t.Fatalf("expected status %q, got %q", StatusInProgress, updated.Status)
+	}
+
+	// The assignee can then submit for review.
+	updated, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+		ToStatus: StatusSubmittedForReview,
+	})
+	if err != nil {
+		t.Fatalf("expected assignee to submit for review, got error: %v", err)
+	}
+
+	if updated.Status != StatusSubmittedForReview {
+		t.Fatalf("expected status %q, got %q", StatusSubmittedForReview, updated.Status)
+	}
+
+	// But the assignee cannot verify their own submitted work — that stays
+	// admin-only, even though it is a legal transition in the full table.
+	_, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+		ToStatus: StatusVerified,
+	})
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected assignee verify attempt to be rejected, got %v", err)
+	}
+}
+
+func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	if _, err := service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", true, RespondToAssignmentInput{}); err != nil {
+		t.Fatalf("expected accept to succeed, got error: %v", err)
+	}
+
+	// A different assignee, not the one this item is assigned to, gets
+	// ErrNotFound — same "acts as if it doesn't exist" rule as GetByID.
+	_, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-999", false, ChangeStatusInput{
+		ToStatus: StatusInProgress,
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found error for unowned work item, got %v", err)
+	}
+}
+
+func TestServiceListStatusHistoryScopesToOwnWorkItem(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	if _, err := service.ListStatusHistory(context.Background(), item.ID, "user-assignee-001", false); err != nil {
+		t.Fatalf("expected assigned user to see history, got error: %v", err)
+	}
+
+	_, err = service.ListStatusHistory(context.Background(), item.ID, "user-assignee-999", false)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found error for unowned work item history, got %v", err)
+	}
+}
+
+func TestServiceGetAssignmentScopesToOwnWorkItem(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	if _, err := service.GetAssignment(context.Background(), item.ID, "user-assignee-001", false); err != nil {
+		t.Fatalf("expected assigned user to see the assignment, got error: %v", err)
+	}
+
+	_, err = service.GetAssignment(context.Background(), item.ID, "user-assignee-999", false)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found error for unowned assignment, got %v", err)
 	}
 }

@@ -132,7 +132,7 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, input)
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput),
@@ -152,7 +152,13 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h WorkItemHandler) ListStatusHistory(w http.ResponseWriter, r *http.Request) {
-	history, err := h.service.ListStatusHistory(r.Context(), r.PathValue("id"))
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	history, err := h.service.ListStatusHistory(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):
@@ -201,7 +207,13 @@ func (h WorkItemHandler) Assign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h WorkItemHandler) GetAssignment(w http.ResponseWriter, r *http.Request) {
-	assignment, err := h.service.GetAssignment(r.Context(), r.PathValue("id"))
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	assignment, err := h.service.GetAssignment(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):

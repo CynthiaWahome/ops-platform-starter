@@ -49,6 +49,25 @@ var validStatusTransitions = map[Status][]Status{
 	StatusFlagged:            {StatusInProgress, StatusCancelled},
 }
 
+// assigneeAllowedTransitions is the subset of validStatusTransitions an
+// assignee may trigger themselves, on a work item assigned to them — the
+// "start work" and "submit progress update" rows from the permission
+// matrix (notes/OPS_PLATFORM_STARTER_PERMISSION_MATRIX.md). Everything
+// else (verify, flag, complete, cancel, assign) stays admin-only. This is
+// deliberately a smaller map, not a filtered view of
+// validStatusTransitions, so the assignee-safe list is easy to read on its
+// own without cross-referencing the full table.
+var assigneeAllowedTransitions = map[Status][]Status{
+	StatusAccepted:   {StatusInProgress},
+	StatusInProgress: {StatusSubmittedForReview},
+}
+
+// IsAssigneeAllowedTransition reports whether an assignee (as opposed to an
+// admin) is permitted to trigger a given status move themselves.
+func IsAssigneeAllowedTransition(from, to Status) bool {
+	return slices.Contains(assigneeAllowedTransitions[from], to)
+}
+
 type Priority string
 
 const (

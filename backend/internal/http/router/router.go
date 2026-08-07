@@ -73,14 +73,14 @@ func New(cfg config.Config) (http.Handler, error) {
 		"PATCH /workitems/{id}/status",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ChangeStatus), auth.RoleAdmin),
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ChangeStatus), auth.RoleAdmin, auth.RoleAssignee),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}/history",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListStatusHistory), auth.RoleAdmin),
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListStatusHistory), auth.RoleAdmin, auth.RoleAssignee),
 		),
 	)
 	mux.Handle(
@@ -94,7 +94,7 @@ func New(cfg config.Config) (http.Handler, error) {
 		"GET /workitems/{id}/assignment",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetAssignment), auth.RoleAdmin),
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetAssignment), auth.RoleAdmin, auth.RoleAssignee),
 		),
 	)
 	mux.Handle(

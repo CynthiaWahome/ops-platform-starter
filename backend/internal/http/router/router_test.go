@@ -519,6 +519,119 @@ func TestAssigneeOnlySeesOwnAssignedWorkItems(t *testing.T) {
 	}
 }
 
+func TestAssigneeCanStartWorkAndSubmitForReviewOnOwnWorkItem(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	acceptReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/assignment/accept", bytes.NewBufferString(`{}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	acceptReq.Header.Set("Content-Type", "application/json")
+	acceptRec := httptest.NewRecorder()
+	handler.ServeHTTP(acceptRec, acceptReq)
+
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept status %d, got %d", http.StatusOK, acceptRec.Code)
+	}
+
+	startReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"in_progress"}`))
+	startReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	handler.ServeHTTP(startRec, startReq)
+
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected start work status %d, got %d", http.StatusOK, startRec.Code)
+	}
+
+	submitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
+	submitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitRec := httptest.NewRecorder()
+	handler.ServeHTTP(submitRec, submitReq)
+
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("expected submit for review status %d, got %d", http.StatusOK, submitRec.Code)
+	}
+
+	// Verifying stays admin-only, even though the assignee just legally
+	// moved the item into submitted_for_review.
+	verifyReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"verified"}`))
+	verifyReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyRec := httptest.NewRecorder()
+	handler.ServeHTTP(verifyRec, verifyReq)
+
+	if verifyRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected assignee verify attempt status %d, got %d", http.StatusBadRequest, verifyRec.Code)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created+"/history", nil)
+	historyReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	historyRec := httptest.NewRecorder()
+	handler.ServeHTTP(historyRec, historyReq)
+
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("expected assignee history status %d, got %d", http.StatusOK, historyRec.Code)
+	}
+
+	getAssignmentReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created+"/assignment", nil)
+	getAssignmentReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	getAssignmentRec := httptest.NewRecorder()
+	handler.ServeHTTP(getAssignmentRec, getAssignmentReq)
+
+	if getAssignmentRec.Code != http.StatusOK {
+		t.Fatalf("expected assignee assignment lookup status %d, got %d", http.StatusOK, getAssignmentRec.Code)
+	}
+}
+
+func TestAssigneeCannotActOnOrViewUnownedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	// Created but never assigned to anyone, so it belongs to nobody's
+	// scope but the admin's.
+	createBody := bytes.NewBufferString(`{"title":"Unassigned job","description":"Not assigned to anyone","priority":"low"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected created work item response to decode, got error: %v", err)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created.ID+"/status", bytes.NewBufferString(`{"toStatus":"in_progress"}`))
+	statusReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	statusReq.Header.Set("Content-Type", "application/json")
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+
+	if statusRec.Code != http.StatusNotFound {
+		t.Fatalf("expected status change on unowned item status %d, got %d", http.StatusNotFound, statusRec.Code)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created.ID+"/history", nil)
+	historyReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	historyRec := httptest.NewRecorder()
+	handler.ServeHTTP(historyRec, historyReq)
+
+	if historyRec.Code != http.StatusNotFound {
+		t.Fatalf("expected history on unowned item status %d, got %d", http.StatusNotFound, historyRec.Code)
+	}
+}
+
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
