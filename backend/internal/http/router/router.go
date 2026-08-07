@@ -3,6 +3,7 @@ package router
 import (
 	"net/http"
 
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/attachments"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/handlers"
@@ -19,10 +20,17 @@ func New(cfg config.Config) (http.Handler, error) {
 	}
 	workItemService := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore())
 
+	attachmentDiskStorage, err := attachments.NewLocalDiskStorage(cfg.AttachmentUploadDir)
+	if err != nil {
+		return nil, err
+	}
+	attachmentService := attachments.NewService(attachments.NewMemoryStore(), attachmentDiskStorage)
+
 	healthHandler := handlers.NewHealthHandler(cfg)
 	authHandler := handlers.NewAuthHandler(authService)
 	accessHandler := handlers.NewAccessHandler()
 	workItemHandler := handlers.NewWorkItemHandler(workItemService)
+	attachmentHandler := handlers.NewAttachmentHandler(workItemService, attachmentService)
 
 	mux.Handle("GET /health", healthHandler)
 	mux.HandleFunc("POST /auth/login", authHandler.Login)
@@ -109,6 +117,20 @@ func New(cfg config.Config) (http.Handler, error) {
 		httpmiddleware.RequireAuth(
 			authService,
 			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.DeclineAssignment), auth.RoleAssignee),
+		),
+	)
+	mux.Handle(
+		"POST /workitems/{id}/attachments",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.Upload), auth.RoleAdmin, auth.RoleAssignee),
+		),
+	)
+	mux.Handle(
+		"GET /workitems/{id}/attachments",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.List), auth.RoleAdmin, auth.RoleAssignee),
 		),
 	)
 

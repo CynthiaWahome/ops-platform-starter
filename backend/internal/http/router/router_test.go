@@ -3,6 +3,7 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -632,6 +633,129 @@ func TestAssigneeCannotActOnOrViewUnownedWorkItem(t *testing.T) {
 	}
 }
 
+func TestAssigneeUploadsAttachmentToOwnWorkItem(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	uploadBody, contentType := newMultipartUploadBody(t, "site.jpg", "evidence_photo", "fake photo bytes")
+
+	uploadReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/attachments", uploadBody)
+	uploadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	uploadReq.Header.Set("Content-Type", contentType)
+	uploadRec := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRec, uploadReq)
+
+	if uploadRec.Code != http.StatusCreated {
+		t.Fatalf("expected upload status %d, got %d: %s", http.StatusCreated, uploadRec.Code, uploadRec.Body.String())
+	}
+
+	var uploaded struct {
+		WorkItemID string `json:"workItemId"`
+		FileSize   int64  `json:"fileSize"`
+		Kind       string `json:"kind"`
+	}
+	if err := json.NewDecoder(uploadRec.Body).Decode(&uploaded); err != nil {
+		t.Fatalf("expected upload response to decode, got error: %v", err)
+	}
+
+	if uploaded.WorkItemID != created {
+		t.Fatalf("expected work item id %q, got %q", created, uploaded.WorkItemID)
+	}
+
+	if uploaded.FileSize != int64(len("fake photo bytes")) {
+		t.Fatalf("expected file size %d, got %d", len("fake photo bytes"), uploaded.FileSize)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created+"/attachments", nil)
+	listReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listRec.Code)
+	}
+
+	var listed []struct {
+		WorkItemID string `json:"workItemId"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listed); err != nil {
+		t.Fatalf("expected list response to decode, got error: %v", err)
+	}
+
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 attachment listed, got %d", len(listed))
+	}
+}
+
+func TestAssigneeCannotUploadToUnownedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	createBody := bytes.NewBufferString(`{"title":"Not theirs","description":"Belongs to no one","priority":"low"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected created work item response to decode, got error: %v", err)
+	}
+
+	uploadBody, contentType := newMultipartUploadBody(t, "site.jpg", "evidence_photo", "fake photo bytes")
+
+	uploadReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created.ID+"/attachments", uploadBody)
+	uploadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	uploadReq.Header.Set("Content-Type", contentType)
+	uploadRec := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRec, uploadReq)
+
+	if uploadRec.Code != http.StatusNotFound {
+		t.Fatalf("expected upload to unowned item status %d, got %d", http.StatusNotFound, uploadRec.Code)
+	}
+}
+
+// newMultipartUploadBody builds a real multipart/form-data request body
+// with a "file" field and a "kind" field, the same shape a browser or
+// Postman would send. Returns the body plus the Content-Type header value
+// (which carries the multipart boundary) that must be set on the request.
+func newMultipartUploadBody(t *testing.T, filename, kind, content string) (*bytes.Buffer, string) {
+	t.Helper()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	if err := writer.WriteField("kind", kind); err != nil {
+		t.Fatalf("expected kind field to write, got error: %v", err)
+	}
+
+	fileWriter, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("expected file field to create, got error: %v", err)
+	}
+
+	if _, err := fileWriter.Write([]byte(content)); err != nil {
+		t.Fatalf("expected file content to write, got error: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("expected multipart writer to close, got error: %v", err)
+	}
+
+	return body, writer.FormDataContentType()
+}
+
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
@@ -646,6 +770,7 @@ func newTestRouter(t *testing.T) http.Handler {
 		BootstrapAssigneeIdentifier:  "assignee@ops.local",
 		BootstrapAssigneePassword:    "ChangeMe123!",
 		BootstrapAssigneeDisplayName: "Assigned Worker",
+		AttachmentUploadDir:          t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("expected router to be created, got error: %v", err)

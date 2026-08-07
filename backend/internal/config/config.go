@@ -17,6 +17,7 @@ type Config struct {
 	BootstrapAssigneeIdentifier  string
 	BootstrapAssigneePassword    string
 	BootstrapAssigneeDisplayName string
+	AttachmentUploadDir          string
 }
 
 func Load() Config {
@@ -34,6 +35,7 @@ func Load() Config {
 			"BOOTSTRAP_ASSIGNEE_DISPLAY_NAME",
 			"Assigned Worker",
 		),
+		AttachmentUploadDir: getEnv("ATTACHMENT_UPLOAD_DIR", "uploads"),
 	}
 }
 
