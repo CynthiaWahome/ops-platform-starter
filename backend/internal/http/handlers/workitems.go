@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/workitems"
 )
@@ -47,9 +48,21 @@ func (h WorkItemHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h WorkItemHandler) List(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.List(r.Context())
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	items, err := h.service.List(r.Context(), principal.UserID, principal.HasRole(auth.RoleAdmin))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to list work items"})
+		switch {
+		case errors.Is(err, workitems.ErrInvalidInput):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to list work items"})
+		}
+
 		return
 	}
 
@@ -57,7 +70,13 @@ func (h WorkItemHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h WorkItemHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	item, err := h.service.GetByID(r.Context(), r.PathValue("id"))
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	item, err := h.service.GetByID(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):

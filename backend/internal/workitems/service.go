@@ -64,16 +64,49 @@ func (s Service) Create(ctx context.Context, createdByUserID string, input Creat
 	return s.store.Create(ctx, item)
 }
 
-func (s Service) List(ctx context.Context) ([]WorkItem, error) {
-	return s.store.List(ctx)
+// List returns work items scoped to the caller. An admin sees every work
+// item. A non-admin caller only sees work items currently assigned to
+// them — the "assignee sees own assigned work only" rule from the
+// starter's permission matrix. The workitems package deliberately doesn't
+// import the auth package, so the caller (the HTTP handler, which does
+// know about roles) resolves "is this an admin" into a plain bool before
+// calling this method.
+func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bool) ([]WorkItem, error) {
+	if callerIsAdmin {
+		return s.store.List(ctx)
+	}
+
+	if strings.TrimSpace(callerUserID) == "" {
+		return nil, ErrInvalidInput
+	}
+
+	return s.store.ListByAssignedToUserID(ctx, callerUserID)
 }
 
-func (s Service) GetByID(ctx context.Context, id string) (WorkItem, error) {
+// GetByID returns one work item, scoped the same way as List. A non-admin
+// caller asking for a work item that isn't assigned to them gets
+// ErrNotFound, not a "forbidden" error — from their point of view the work
+// item does not exist, rather than existing-but-hidden. This avoids
+// revealing that a given id belongs to someone else.
+func (s Service) GetByID(ctx context.Context, id string, callerUserID string, callerIsAdmin bool) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
 
-	return s.store.GetByID(ctx, id)
+	item, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return WorkItem{}, err
+	}
+
+	if callerIsAdmin {
+		return item, nil
+	}
+
+	if item.AssignedToUserID == nil || *item.AssignedToUserID != callerUserID {
+		return WorkItem{}, ErrNotFound
+	}
+
+	return item, nil
 }
 
 func (s Service) Update(ctx context.Context, id string, input UpdateInput) (WorkItem, error) {

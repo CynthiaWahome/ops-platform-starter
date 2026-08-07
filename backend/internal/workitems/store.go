@@ -11,6 +11,7 @@ import (
 type Store interface {
 	Create(ctx context.Context, item WorkItem) (WorkItem, error)
 	List(ctx context.Context) ([]WorkItem, error)
+	ListByAssignedToUserID(ctx context.Context, userID string) ([]WorkItem, error)
 	GetByID(ctx context.Context, id string) (WorkItem, error)
 	Update(ctx context.Context, item WorkItem) (WorkItem, error)
 }
@@ -49,6 +50,31 @@ func (s *MemoryStore) List(_ context.Context) ([]WorkItem, error) {
 	items := make([]WorkItem, 0, len(s.ordered))
 	for _, id := range s.ordered {
 		items = append(items, cloneWorkItem(s.byID[id]))
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+
+	return items, nil
+}
+
+// ListByAssignedToUserID returns only the work items currently assigned to
+// one user, newest first — the store-level half of OPS-024's role-filtered
+// visibility. Filtering happens here rather than in the service so the
+// service never has to fetch everything and throw rows away; a real
+// database-backed Store would turn this into a WHERE clause instead of a
+// full scan.
+func (s *MemoryStore) ListByAssignedToUserID(_ context.Context, userID string) ([]WorkItem, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]WorkItem, 0)
+	for _, id := range s.ordered {
+		item := s.byID[id]
+		if item.AssignedToUserID != nil && *item.AssignedToUserID == userID {
+			items = append(items, cloneWorkItem(item))
+		}
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
