@@ -296,6 +296,145 @@ func TestAdminAssignmentFlow(t *testing.T) {
 	}
 }
 
+func TestAssigneeAcceptAssignmentFlow(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	acceptBody := bytes.NewBufferString(`{"note":"on my way"}`)
+	acceptReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/assignment/accept", acceptBody)
+	acceptReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	acceptReq.Header.Set("Content-Type", "application/json")
+	acceptRec := httptest.NewRecorder()
+	handler.ServeHTTP(acceptRec, acceptReq)
+
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept status %d, got %d", http.StatusOK, acceptRec.Code)
+	}
+
+	var accepted struct {
+		Status       string `json:"status"`
+		ResponseNote string `json:"responseNote"`
+	}
+	if err := json.NewDecoder(acceptRec.Body).Decode(&accepted); err != nil {
+		t.Fatalf("expected accept response to decode, got error: %v", err)
+	}
+
+	if accepted.Status != "accepted" {
+		t.Fatalf("expected assignment status %q, got %q", "accepted", accepted.Status)
+	}
+
+	getWorkItemReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created, nil)
+	getWorkItemReq.Header.Set("Authorization", "Bearer "+adminToken)
+	getWorkItemRec := httptest.NewRecorder()
+	handler.ServeHTTP(getWorkItemRec, getWorkItemReq)
+
+	var workItem struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(getWorkItemRec.Body).Decode(&workItem); err != nil {
+		t.Fatalf("expected work item response to decode, got error: %v", err)
+	}
+
+	if workItem.Status != "accepted" {
+		t.Fatalf("expected work item status %q after accept, got %q", "accepted", workItem.Status)
+	}
+}
+
+func TestAssigneeDeclineAssignmentBouncesWorkItemToCreated(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	declineReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/assignment/decline", bytes.NewBufferString(`{}`))
+	declineReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	declineReq.Header.Set("Content-Type", "application/json")
+	declineRec := httptest.NewRecorder()
+	handler.ServeHTTP(declineRec, declineReq)
+
+	if declineRec.Code != http.StatusOK {
+		t.Fatalf("expected decline status %d, got %d", http.StatusOK, declineRec.Code)
+	}
+
+	var declined struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(declineRec.Body).Decode(&declined); err != nil {
+		t.Fatalf("expected decline response to decode, got error: %v", err)
+	}
+
+	if declined.Status != "declined" {
+		t.Fatalf("expected assignment status %q, got %q", "declined", declined.Status)
+	}
+
+	getWorkItemReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created, nil)
+	getWorkItemReq.Header.Set("Authorization", "Bearer "+adminToken)
+	getWorkItemRec := httptest.NewRecorder()
+	handler.ServeHTTP(getWorkItemRec, getWorkItemReq)
+
+	var workItem struct {
+		Status           string  `json:"status"`
+		AssignedToUserID *string `json:"assignedToUserId"`
+	}
+	if err := json.NewDecoder(getWorkItemRec.Body).Decode(&workItem); err != nil {
+		t.Fatalf("expected work item response to decode, got error: %v", err)
+	}
+
+	if workItem.Status != "created" {
+		t.Fatalf("expected work item status %q after decline, got %q", "created", workItem.Status)
+	}
+
+	if workItem.AssignedToUserID != nil {
+		t.Fatal("expected assignedToUserId to be cleared after decline")
+	}
+}
+
+// createAndAssignWorkItem is a small helper shared by the accept and
+// decline flow tests: both need a freshly created and assigned work item
+// before they can exercise the response endpoints.
+func createAndAssignWorkItem(t *testing.T, handler http.Handler, adminToken string, assignedToUserID string) string {
+	t.Helper()
+
+	createBody := bytes.NewBufferString(`{"title":"Fence repair","description":"Repair the perimeter fence","priority":"medium"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, createRec.Code)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected created work item response to decode, got error: %v", err)
+	}
+
+	assignBody := bytes.NewBufferString(`{"assignedToUserId":"` + assignedToUserID + `"}`)
+	assignReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created.ID+"/assignment", assignBody)
+	assignReq.Header.Set("Authorization", "Bearer "+adminToken)
+	assignReq.Header.Set("Content-Type", "application/json")
+	assignRec := httptest.NewRecorder()
+	handler.ServeHTTP(assignRec, assignReq)
+
+	if assignRec.Code != http.StatusCreated {
+		t.Fatalf("expected assign status %d, got %d", http.StatusCreated, assignRec.Code)
+	}
+
+	return created.ID
+}
+
 func TestAssigneeCannotCreateWorkItem(t *testing.T) {
 	t.Parallel()
 

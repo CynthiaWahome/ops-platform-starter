@@ -286,3 +286,164 @@ func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
 		t.Fatalf("expected assignment not found error, got %v", err)
 	}
 }
+
+func TestServiceRespondToAssignmentAccept(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore()).WithClock(func() time.Time {
+		return time.Date(2026, time.August, 6, 9, 0, 0, 0, time.UTC)
+	})
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	})
+	if err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	note := "on my way"
+
+	assignment, err := service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", true, RespondToAssignmentInput{
+		Note: &note,
+	})
+	if err != nil {
+		t.Fatalf("expected accept to succeed, got error: %v", err)
+	}
+
+	if assignment.Status != AssignmentStatusAccepted {
+		t.Fatalf("expected assignment status %q, got %q", AssignmentStatusAccepted, assignment.Status)
+	}
+
+	if assignment.RespondedAt == nil {
+		t.Fatal("expected respondedAt to be set")
+	}
+
+	if assignment.ResponseNote == nil || *assignment.ResponseNote != note {
+		t.Fatalf("expected response note %q, got %v", note, assignment.ResponseNote)
+	}
+
+	updated, err := service.GetByID(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("expected get by id to succeed, got error: %v", err)
+	}
+
+	if updated.Status != StatusAccepted {
+		t.Fatalf("expected work item status %q, got %q", StatusAccepted, updated.Status)
+	}
+
+	if updated.AssignedToUserID == nil || *updated.AssignedToUserID != "user-assignee-001" {
+		t.Fatal("expected assignedToUserId to remain set after accept")
+	}
+}
+
+func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	})
+	if err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	assignment, err := service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", false, RespondToAssignmentInput{})
+	if err != nil {
+		t.Fatalf("expected decline to succeed, got error: %v", err)
+	}
+
+	if assignment.Status != AssignmentStatusDeclined {
+		t.Fatalf("expected assignment status %q, got %q", AssignmentStatusDeclined, assignment.Status)
+	}
+
+	updated, err := service.GetByID(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("expected get by id to succeed, got error: %v", err)
+	}
+
+	if updated.Status != StatusCreated {
+		t.Fatalf("expected work item status %q after decline, got %q", StatusCreated, updated.Status)
+	}
+
+	if updated.AssignedToUserID != nil {
+		t.Fatal("expected assignedToUserId to be cleared after decline")
+	}
+}
+
+func TestServiceRespondToAssignmentRejectsWrongUser(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	})
+	if err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	_, err = service.RespondToAssignment(context.Background(), item.ID, "user-assignee-999", true, RespondToAssignmentInput{})
+	if !errors.Is(err, ErrAssignmentNotOwned) {
+		t.Fatalf("expected assignment not owned error, got %v", err)
+	}
+}
+
+func TestServiceRespondToAssignmentRejectsAlreadyRespondedTo(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title:       "Gate repaint",
+		Description: "Repaint the gate",
+		Priority:    PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	})
+	if err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	_, err = service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", true, RespondToAssignmentInput{})
+	if err != nil {
+		t.Fatalf("expected first accept to succeed, got error: %v", err)
+	}
+
+	_, err = service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", false, RespondToAssignmentInput{})
+	if !errors.Is(err, ErrAssignmentNotPending) {
+		t.Fatalf("expected assignment not pending error, got %v", err)
+	}
+}

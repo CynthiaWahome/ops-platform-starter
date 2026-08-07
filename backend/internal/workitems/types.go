@@ -7,12 +7,14 @@ import (
 )
 
 var (
-	ErrNotFound           = errors.New("work item not found")
-	ErrInvalidInput       = errors.New("invalid work item input")
-	ErrInvalidPriority    = errors.New("invalid work item priority")
-	ErrInvalidStatus      = errors.New("invalid work item status")
-	ErrInvalidTransition  = errors.New("status transition not allowed")
-	ErrAssignmentNotFound = errors.New("assignment not found")
+	ErrNotFound             = errors.New("work item not found")
+	ErrInvalidInput         = errors.New("invalid work item input")
+	ErrInvalidPriority      = errors.New("invalid work item priority")
+	ErrInvalidStatus        = errors.New("invalid work item status")
+	ErrInvalidTransition    = errors.New("status transition not allowed")
+	ErrAssignmentNotFound   = errors.New("assignment not found")
+	ErrAssignmentNotOwned   = errors.New("assignment does not belong to this user")
+	ErrAssignmentNotPending = errors.New("assignment has already been responded to")
 )
 
 type Status string
@@ -32,9 +34,14 @@ const (
 // validStatusTransitions lists every status a work item may move to from a
 // given status. Completed and Cancelled are end states: they have no
 // outgoing entries, so nothing can move once a work item lands there.
+//
+// StatusAssigned -> StatusCreated is the one addition on top of the OPS-003
+// backbone: it is the decline path (OPS-023). Declining bounces the work
+// item back to unassigned rather than cancelling it, so an admin can
+// reassign it to someone else instead of the work item dying outright.
 var validStatusTransitions = map[Status][]Status{
 	StatusCreated:            {StatusAssigned, StatusCancelled},
-	StatusAssigned:           {StatusAccepted, StatusCancelled},
+	StatusAssigned:           {StatusAccepted, StatusCancelled, StatusCreated},
 	StatusAccepted:           {StatusInProgress, StatusCancelled},
 	StatusInProgress:         {StatusSubmittedForReview, StatusCancelled},
 	StatusSubmittedForReview: {StatusVerified, StatusFlagged, StatusCancelled},
@@ -103,13 +110,15 @@ type AssignmentStatus string
 
 const (
 	AssignmentStatusAssigned AssignmentStatus = "assigned"
+	AssignmentStatusAccepted AssignmentStatus = "accepted"
+	AssignmentStatusDeclined AssignmentStatus = "declined"
 )
 
 // Assignment represents the act of giving a work item to an assignee. It is
 // kept separate from WorkItem because assignment has its own lifecycle
 // (assigned -> accepted/declined) that should not be flattened into the
 // work item row. RespondedAt and ResponseNote stay nil until the assignee
-// responds, which is OPS-023's job, not this slice's.
+// responds via RespondToAssignment.
 type Assignment struct {
 	ID               string           `json:"id"`
 	WorkItemID       string           `json:"workItemId"`
@@ -123,6 +132,10 @@ type Assignment struct {
 
 type AssignInput struct {
 	AssignedToUserID string `json:"assignedToUserId"`
+}
+
+type RespondToAssignmentInput struct {
+	Note *string `json:"note,omitempty"`
 }
 
 func (p Priority) IsValid() bool {

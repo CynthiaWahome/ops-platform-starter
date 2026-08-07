@@ -271,6 +271,85 @@ func (s Service) GetAssignment(ctx context.Context, workItemID string) (Assignme
 	return s.assignmentStore.GetByWorkItemID(ctx, workItemID)
 }
 
+// RespondToAssignment lets the assignee a work item is assigned to accept
+// or decline it. accept controls which path is taken:
+//
+//   - accept: work item moves Assigned -> Accepted, assignment recorded as
+//     accepted
+//   - decline: work item moves Assigned -> Created (unassigned again, so
+//     an admin can reassign it), assignment recorded as declined
+//
+// respondingUserID must match the assignment's AssignedToUserID — this is
+// the ownership check that role middleware alone cannot make, since
+// middleware only knows the caller's role, not which specific work item
+// they were assigned.
+func (s Service) RespondToAssignment(ctx context.Context, workItemID string, respondingUserID string, accept bool, input RespondToAssignmentInput) (Assignment, error) {
+	if strings.TrimSpace(workItemID) == "" || strings.TrimSpace(respondingUserID) == "" {
+		return Assignment{}, ErrInvalidInput
+	}
+
+	item, err := s.store.GetByID(ctx, workItemID)
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	assignment, err := s.assignmentStore.GetByWorkItemID(ctx, workItemID)
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	if assignment.AssignedToUserID != respondingUserID {
+		return Assignment{}, ErrAssignmentNotOwned
+	}
+
+	if assignment.Status != AssignmentStatusAssigned {
+		return Assignment{}, ErrAssignmentNotPending
+	}
+
+	toStatus := StatusCreated
+	assignmentStatus := AssignmentStatusDeclined
+	if accept {
+		toStatus = StatusAccepted
+		assignmentStatus = AssignmentStatusAccepted
+	}
+
+	if !IsValidTransition(item.Status, toStatus) {
+		return Assignment{}, ErrInvalidTransition
+	}
+
+	fromStatus := item.Status
+	now := s.now()
+
+	item.Status = toStatus
+	item.UpdatedAt = now
+
+	if !accept {
+		item.AssignedToUserID = nil
+	}
+
+	if _, err := s.store.Update(ctx, item); err != nil {
+		return Assignment{}, err
+	}
+
+	if err := s.recordStatusChange(ctx, workItemID, fromStatus, toStatus, respondingUserID, input.Note, now); err != nil {
+		return Assignment{}, err
+	}
+
+	var note *string
+	if input.Note != nil {
+		trimmed := strings.TrimSpace(*input.Note)
+		if trimmed != "" {
+			note = &trimmed
+		}
+	}
+
+	assignment.Status = assignmentStatus
+	assignment.RespondedAt = ptrTime(now)
+	assignment.ResponseNote = note
+
+	return s.assignmentStore.Update(ctx, assignment)
+}
+
 func (s Service) WithClock(now func() time.Time) Service {
 	s.now = now
 	return s

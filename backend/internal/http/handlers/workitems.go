@@ -201,6 +201,54 @@ func (h WorkItemHandler) GetAssignment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, assignment)
 }
 
+func (h WorkItemHandler) AcceptAssignment(w http.ResponseWriter, r *http.Request) {
+	h.respondToAssignment(w, r, true)
+}
+
+func (h WorkItemHandler) DeclineAssignment(w http.ResponseWriter, r *http.Request) {
+	h.respondToAssignment(w, r, false)
+}
+
+// respondToAssignment is shared by AcceptAssignment and DeclineAssignment so
+// the request decoding, error mapping, and response writing live in one
+// place instead of two near-identical copies.
+func (h WorkItemHandler) respondToAssignment(w http.ResponseWriter, r *http.Request, accept bool) {
+	var input workitems.RespondToAssignmentInput
+
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	assignment, err := h.service.RespondToAssignment(r.Context(), r.PathValue("id"), principal.UserID, accept, input)
+	if err != nil {
+		switch {
+		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrAssignmentNotOwned):
+			writeJSON(w, http.StatusForbidden, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrAssignmentNotPending):
+			writeJSON(w, http.StatusConflict, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
+		case errors.Is(err, workitems.ErrAssignmentNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "assignment not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to respond to assignment"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, assignment)
+}
+
 func decodeJSON(r *http.Request, target any) error {
 	defer r.Body.Close()
 
