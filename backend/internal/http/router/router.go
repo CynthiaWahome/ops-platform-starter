@@ -97,6 +97,20 @@ func New(cfg config.Config) (http.Handler, error) {
 			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetAssignment), auth.RoleAdmin),
 		),
 	)
+	mux.Handle(
+		"POST /workitems/{id}/assignment/accept",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.AcceptAssignment), auth.RoleAssignee),
+		),
+	)
+	mux.Handle(
+		"POST /workitems/{id}/assignment/decline",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.DeclineAssignment), auth.RoleAssignee),
+		),
+	)
 
 	return mux, nil
 }
