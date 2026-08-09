@@ -42,6 +42,7 @@ backend/coverage.out
 backend/coverage.txt
 backend/*.test
 backend/*.out
+backend/uploads/
 
 # Next.js / Node frontend
 frontend/node_modules/
