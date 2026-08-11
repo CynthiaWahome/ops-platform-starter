@@ -5,17 +5,25 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/attachments"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/workitems"
 )
 
 type WorkItemHandler struct {
-	service workitems.Service
+	service           workitems.Service
+	attachmentService attachments.Service
 }
 
-func NewWorkItemHandler(service workitems.Service) WorkItemHandler {
-	return WorkItemHandler{service: service}
+// NewWorkItemHandler takes an attachments.Service alongside the existing
+// workitems.Service. workitems and attachments never import each other —
+// this handler is the one place that knows both exist, the same role it
+// already plays for AttachmentHandler's ownership gate. Here it enforces
+// one small rule that connects the two: a work item cannot move to
+// StatusSubmittedForReview with zero attachments recorded against it.
+func NewWorkItemHandler(service workitems.Service, attachmentService attachments.Service) WorkItemHandler {
+	return WorkItemHandler{service: service, attachmentService: attachmentService}
 }
 
 func (h WorkItemHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +140,34 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), input)
+	workItemID := r.PathValue("id")
+	callerIsAdmin := principal.HasRole(auth.RoleAdmin)
+
+	// Explicit evidence submission (OPS-031): moving into
+	// StatusSubmittedForReview requires at least one attachment already
+	// recorded. Confirms access to the work item first, the same
+	// GetByID ownership gate AttachmentHandler already uses, before
+	// asking attachmentService anything — a caller who cannot see this
+	// work item never learns whether it has attachments.
+	if input.ToStatus == workitems.StatusSubmittedForReview {
+		if _, err := h.service.GetByID(r.Context(), workItemID, principal.UserID, callerIsAdmin); err != nil {
+			writeWorkItemAccessError(w, err)
+			return
+		}
+
+		existing, err := h.attachmentService.List(r.Context(), workItemID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to check attachments"})
+			return
+		}
+
+		if len(existing) == 0 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: "at least one attachment is required before submitting for review"})
+			return
+		}
+	}
+
+	item, err := h.service.ChangeStatus(r.Context(), workItemID, principal.UserID, callerIsAdmin, input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput),

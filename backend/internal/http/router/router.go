@@ -29,7 +29,7 @@ func New(cfg config.Config) (http.Handler, error) {
 	healthHandler := handlers.NewHealthHandler(cfg)
 	authHandler := handlers.NewAuthHandler(authService)
 	accessHandler := handlers.NewAccessHandler()
-	workItemHandler := handlers.NewWorkItemHandler(workItemService)
+	workItemHandler := handlers.NewWorkItemHandler(workItemService, attachmentService)
 	attachmentHandler := handlers.NewAttachmentHandler(workItemService, attachmentService)
 
 	mux.Handle("GET /health", healthHandler)
