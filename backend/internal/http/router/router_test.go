@@ -549,6 +549,18 @@ func TestAssigneeCanStartWorkAndSubmitForReviewOnOwnWorkItem(t *testing.T) {
 		t.Fatalf("expected start work status %d, got %d", http.StatusOK, startRec.Code)
 	}
 
+	// OPS-031: submitting for review requires at least one attachment.
+	uploadBody, contentType := newMultipartUploadBody(t, "site.jpg", "evidence_photo", "fake photo bytes")
+	uploadReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/attachments", uploadBody)
+	uploadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	uploadReq.Header.Set("Content-Type", contentType)
+	uploadRec := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRec, uploadReq)
+
+	if uploadRec.Code != http.StatusCreated {
+		t.Fatalf("expected upload status %d, got %d", http.StatusCreated, uploadRec.Code)
+	}
+
 	submitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
 	submitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
 	submitReq.Header.Set("Content-Type", "application/json")
@@ -723,6 +735,122 @@ func TestAssigneeCannotUploadToUnownedWorkItem(t *testing.T) {
 
 	if uploadRec.Code != http.StatusNotFound {
 		t.Fatalf("expected upload to unowned item status %d, got %d", http.StatusNotFound, uploadRec.Code)
+	}
+}
+
+func TestSubmitForReviewRequiresAtLeastOneAttachment(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	acceptReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/assignment/accept", bytes.NewBufferString(`{}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	acceptReq.Header.Set("Content-Type", "application/json")
+	acceptRec := httptest.NewRecorder()
+	handler.ServeHTTP(acceptRec, acceptReq)
+
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept status %d, got %d", http.StatusOK, acceptRec.Code)
+	}
+
+	startReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"in_progress"}`))
+	startReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	handler.ServeHTTP(startRec, startReq)
+
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected start work status %d, got %d", http.StatusOK, startRec.Code)
+	}
+
+	// No attachment uploaded yet — submit for review should be rejected.
+	submitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
+	submitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitRec := httptest.NewRecorder()
+	handler.ServeHTTP(submitRec, submitReq)
+
+	if submitRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected submit for review without evidence status %d, got %d", http.StatusBadRequest, submitRec.Code)
+	}
+
+	// Confirm it is still in_progress, not silently moved.
+	getReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created, nil)
+	getReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+
+	var item struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&item); err != nil {
+		t.Fatalf("expected work item response to decode, got error: %v", err)
+	}
+
+	if item.Status != "in_progress" {
+		t.Fatalf("expected work item to remain %q after rejected submission, got %q", "in_progress", item.Status)
+	}
+
+	// Now upload evidence and retry — should succeed.
+	uploadBody, contentType := newMultipartUploadBody(t, "site.jpg", "evidence_photo", "fake photo bytes")
+	uploadReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/attachments", uploadBody)
+	uploadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	uploadReq.Header.Set("Content-Type", contentType)
+	uploadRec := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRec, uploadReq)
+
+	if uploadRec.Code != http.StatusCreated {
+		t.Fatalf("expected upload status %d, got %d", http.StatusCreated, uploadRec.Code)
+	}
+
+	retryReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
+	retryReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	retryReq.Header.Set("Content-Type", "application/json")
+	retryRec := httptest.NewRecorder()
+	handler.ServeHTTP(retryRec, retryReq)
+
+	if retryRec.Code != http.StatusOK {
+		t.Fatalf("expected submit for review with evidence status %d, got %d", http.StatusOK, retryRec.Code)
+	}
+}
+
+func TestSubmitForReviewOnUnownedWorkItemStaysNotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	// Created but never assigned to anyone.
+	createBody := bytes.NewBufferString(`{"title":"Not theirs","description":"Belongs to no one","priority":"low"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected created work item response to decode, got error: %v", err)
+	}
+
+	// The evidence-check guard must not run before the ownership check —
+	// a caller with no access to this work item should see 404, the same
+	// as every other unowned-item case, not a 400 about missing evidence.
+	submitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created.ID+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
+	submitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitRec := httptest.NewRecorder()
+	handler.ServeHTTP(submitRec, submitReq)
+
+	if submitRec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, submitRec.Code)
 	}
 }
 

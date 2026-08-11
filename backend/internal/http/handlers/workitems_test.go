@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/attachments"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/workitems"
@@ -19,7 +20,13 @@ func TestWorkItemHandlerCreateReturnsCreatedItem(t *testing.T) {
 	service := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore()).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 18, 15, 0, 0, time.UTC)
 	})
-	handler := NewWorkItemHandler(service)
+	attachmentStorage, err := attachments.NewLocalDiskStorage(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected attachment storage to initialize, got error: %v", err)
+	}
+	attachmentService := attachments.NewService(attachments.NewMemoryStore(), attachmentStorage)
+
+	handler := NewWorkItemHandler(service, attachmentService)
 
 	body := bytes.NewBufferString(`{"title":"Gate repaint","description":"Repaint the estate gate","priority":"high"}`)
 	req := httptest.NewRequest(http.MethodPost, "/workitems", body)
