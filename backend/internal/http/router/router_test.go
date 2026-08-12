@@ -923,6 +923,134 @@ func submitWorkItemForReview(t *testing.T, handler http.Handler, assigneeToken s
 	}
 }
 
+func TestAdminFlagsSubmittedWorkItemAndAssigneeSeesFeedback(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+	submitWorkItemForReview(t, handler, assigneeToken, created)
+
+	flagReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/flag", bytes.NewBufferString(`{"note":"Photo is blurry, retake before resubmitting"}`))
+	flagReq.Header.Set("Authorization", "Bearer "+adminToken)
+	flagReq.Header.Set("Content-Type", "application/json")
+	flagRec := httptest.NewRecorder()
+	handler.ServeHTTP(flagRec, flagReq)
+
+	if flagRec.Code != http.StatusOK {
+		t.Fatalf("expected flag status %d, got %d", http.StatusOK, flagRec.Code)
+	}
+
+	var flagged struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(flagRec.Body).Decode(&flagged); err != nil {
+		t.Fatalf("expected flag response to decode, got error: %v", err)
+	}
+
+	if flagged.Status != "flagged" {
+		t.Fatalf("expected work item status %q, got %q", "flagged", flagged.Status)
+	}
+
+	// DoD: "assignee can see the feedback state" — confirm the assignee,
+	// scoped to their own item, can read both the current status and the
+	// feedback note left on it, not just that the admin-side call worked.
+	getReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created, nil)
+	getReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+
+	var item struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&item); err != nil {
+		t.Fatalf("expected work item response to decode, got error: %v", err)
+	}
+
+	if item.Status != "flagged" {
+		t.Fatalf("expected assignee-visible status %q, got %q", "flagged", item.Status)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created+"/history", nil)
+	historyReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	historyRec := httptest.NewRecorder()
+	handler.ServeHTTP(historyRec, historyReq)
+
+	var history []struct {
+		ToStatus string  `json:"toStatus"`
+		Reason   *string `json:"reason,omitempty"`
+	}
+	if err := json.NewDecoder(historyRec.Body).Decode(&history); err != nil {
+		t.Fatalf("expected history response to decode, got error: %v", err)
+	}
+
+	last := history[len(history)-1]
+	if last.ToStatus != "flagged" {
+		t.Fatalf("expected last history entry toStatus %q, got %q", "flagged", last.ToStatus)
+	}
+	if last.Reason == nil || *last.Reason != "Photo is blurry, retake before resubmitting" {
+		t.Fatalf("expected feedback note visible to assignee, got %v", last.Reason)
+	}
+
+	// OPS-033: the assignee reworks the flagged item themselves —
+	// Flagged -> InProgress — without needing an admin to move it.
+	reworkReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"in_progress"}`))
+	reworkReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	reworkReq.Header.Set("Content-Type", "application/json")
+	reworkRec := httptest.NewRecorder()
+	handler.ServeHTTP(reworkRec, reworkReq)
+
+	if reworkRec.Code != http.StatusOK {
+		t.Fatalf("expected assignee rework status %d, got %d", http.StatusOK, reworkRec.Code)
+	}
+}
+
+func TestFlagRequiresANonEmptyNote(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+	submitWorkItemForReview(t, handler, assigneeToken, created)
+
+	flagReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/flag", bytes.NewBufferString(`{"note":"   "}`))
+	flagReq.Header.Set("Authorization", "Bearer "+adminToken)
+	flagReq.Header.Set("Content-Type", "application/json")
+	flagRec := httptest.NewRecorder()
+	handler.ServeHTTP(flagRec, flagReq)
+
+	if flagRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected empty-note flag status %d, got %d", http.StatusBadRequest, flagRec.Code)
+	}
+}
+
+func TestAssigneeCannotFlagOwnSubmittedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+	submitWorkItemForReview(t, handler, assigneeToken, created)
+
+	// The dedicated /flag route is admin-only at the middleware layer,
+	// same as /verify — 403, never reaches the service.
+	flagReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/flag", bytes.NewBufferString(`{"note":"trying to flag my own work"}`))
+	flagReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	flagReq.Header.Set("Content-Type", "application/json")
+	flagRec := httptest.NewRecorder()
+	handler.ServeHTTP(flagRec, flagReq)
+
+	if flagRec.Code != http.StatusForbidden {
+		t.Fatalf("expected assignee flag attempt status %d, got %d", http.StatusForbidden, flagRec.Code)
+	}
+}
+
 func TestSubmitForReviewOnUnownedWorkItemStaysNotFound(t *testing.T) {
 	t.Parallel()
 

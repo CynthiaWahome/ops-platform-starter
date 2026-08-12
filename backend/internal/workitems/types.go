@@ -52,14 +52,18 @@ var validStatusTransitions = map[Status][]Status{
 // assigneeAllowedTransitions is the subset of validStatusTransitions an
 // assignee may trigger themselves, on a work item assigned to them — the
 // "start work" and "submit progress update" rows from the permission
-// matrix (notes/OPS_PLATFORM_STARTER_PERMISSION_MATRIX.md). Everything
-// else (verify, flag, complete, cancel, assign) stays admin-only. This is
-// deliberately a smaller map, not a filtered view of
+// matrix (notes/OPS_PLATFORM_STARTER_PERMISSION_MATRIX.md), plus the
+// rework path (OPS-033): Flagged -> InProgress, so an assignee whose
+// submission was sent back can pick the work back up themselves instead
+// of waiting on an admin to move it. Triggering Flagged in the first
+// place (verify, flag, complete, cancel, assign) stays admin-only. This
+// is deliberately a smaller map, not a filtered view of
 // validStatusTransitions, so the assignee-safe list is easy to read on its
 // own without cross-referencing the full table.
 var assigneeAllowedTransitions = map[Status][]Status{
 	StatusAccepted:   {StatusInProgress},
 	StatusInProgress: {StatusSubmittedForReview},
+	StatusFlagged:    {StatusInProgress},
 }
 
 // IsAssigneeAllowedTransition reports whether an assignee (as opposed to an
@@ -131,6 +135,15 @@ type ChangeStatusInput struct {
 // status change already records itself under in StatusHistory.
 type VerifyInput struct {
 	Note *string `json:"note,omitempty"`
+}
+
+// FlagInput is the request body for POST /workitems/{id}/flag. Note is a
+// plain string, not a pointer like VerifyInput's — unlike verifying,
+// flagging without feedback leaves the assignee with nothing to act on,
+// so the field being required is part of the type, not just a runtime
+// check bolted on afterward.
+type FlagInput struct {
+	Note string `json:"note"`
 }
 
 type AssignmentStatus string
