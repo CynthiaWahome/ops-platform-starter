@@ -186,6 +186,48 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+// Verify is a purpose-built front door onto ChangeStatus for the one
+// transition OPS-032 cares about: SubmittedForReview -> Verified. The
+// route this is wired to (POST /workitems/{id}/verify) is registered
+// admin-only, so unlike the generic PATCH /workitems/{id}/status endpoint
+// — where a non-admin caller reaches the service layer and gets rejected
+// there as an invalid transition (400) — an assignee hitting this route
+// never gets past the middleware (403). Same underlying state machine,
+// tighter, more honest error for the wrong-role case.
+func (h WorkItemHandler) Verify(w http.ResponseWriter, r *http.Request) {
+	var input workitems.VerifyInput
+
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), workitems.ChangeStatusInput{
+		ToStatus: workitems.StatusVerified,
+		Reason:   input.Note,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to verify work item"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (h WorkItemHandler) ListStatusHistory(w http.ResponseWriter, r *http.Request) {
 	principal, ok := middleware.PrincipalFromContext(r.Context())
 	if !ok {

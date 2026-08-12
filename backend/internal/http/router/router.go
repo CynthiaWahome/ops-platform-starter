@@ -85,6 +85,13 @@ func New(cfg config.Config) (http.Handler, error) {
 		),
 	)
 	mux.Handle(
+		"POST /workitems/{id}/verify",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Verify), auth.RoleAdmin),
+		),
+	)
+	mux.Handle(
 		"GET /workitems/{id}/history",
 		httpmiddleware.RequireAuth(
 			authService,

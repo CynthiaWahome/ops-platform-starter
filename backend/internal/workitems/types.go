@@ -125,6 +125,14 @@ type ChangeStatusInput struct {
 	Reason   *string `json:"reason,omitempty"`
 }
 
+// VerifyInput is the request body for POST /workitems/{id}/verify. Note is
+// optional — an admin can verify with no comment at all — and maps
+// straight onto ChangeStatusInput.Reason, the same field every other
+// status change already records itself under in StatusHistory.
+type VerifyInput struct {
+	Note *string `json:"note,omitempty"`
+}
+
 type AssignmentStatus string
 
 const (

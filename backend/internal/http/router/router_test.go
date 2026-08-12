@@ -528,48 +528,7 @@ func TestAssigneeCanStartWorkAndSubmitForReviewOnOwnWorkItem(t *testing.T) {
 	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
 
 	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
-
-	acceptReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/assignment/accept", bytes.NewBufferString(`{}`))
-	acceptReq.Header.Set("Authorization", "Bearer "+assigneeToken)
-	acceptReq.Header.Set("Content-Type", "application/json")
-	acceptRec := httptest.NewRecorder()
-	handler.ServeHTTP(acceptRec, acceptReq)
-
-	if acceptRec.Code != http.StatusOK {
-		t.Fatalf("expected accept status %d, got %d", http.StatusOK, acceptRec.Code)
-	}
-
-	startReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"in_progress"}`))
-	startReq.Header.Set("Authorization", "Bearer "+assigneeToken)
-	startReq.Header.Set("Content-Type", "application/json")
-	startRec := httptest.NewRecorder()
-	handler.ServeHTTP(startRec, startReq)
-
-	if startRec.Code != http.StatusOK {
-		t.Fatalf("expected start work status %d, got %d", http.StatusOK, startRec.Code)
-	}
-
-	// OPS-031: submitting for review requires at least one attachment.
-	uploadBody, contentType := newMultipartUploadBody(t, "site.jpg", "evidence_photo", "fake photo bytes")
-	uploadReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/attachments", uploadBody)
-	uploadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
-	uploadReq.Header.Set("Content-Type", contentType)
-	uploadRec := httptest.NewRecorder()
-	handler.ServeHTTP(uploadRec, uploadReq)
-
-	if uploadRec.Code != http.StatusCreated {
-		t.Fatalf("expected upload status %d, got %d", http.StatusCreated, uploadRec.Code)
-	}
-
-	submitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
-	submitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
-	submitReq.Header.Set("Content-Type", "application/json")
-	submitRec := httptest.NewRecorder()
-	handler.ServeHTTP(submitRec, submitReq)
-
-	if submitRec.Code != http.StatusOK {
-		t.Fatalf("expected submit for review status %d, got %d", http.StatusOK, submitRec.Code)
-	}
+	submitWorkItemForReview(t, handler, assigneeToken, created)
 
 	// Verifying stays admin-only, even though the assignee just legally
 	// moved the item into submitted_for_review.
@@ -815,6 +774,152 @@ func TestSubmitForReviewRequiresAtLeastOneAttachment(t *testing.T) {
 
 	if retryRec.Code != http.StatusOK {
 		t.Fatalf("expected submit for review with evidence status %d, got %d", http.StatusOK, retryRec.Code)
+	}
+}
+
+func TestAdminVerifiesSubmittedWorkItemAndTimelineReflectsIt(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+	submitWorkItemForReview(t, handler, assigneeToken, created)
+
+	verifyReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/verify", bytes.NewBufferString(`{"note":"Photo matches the completed fence line"}`))
+	verifyReq.Header.Set("Authorization", "Bearer "+adminToken)
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyRec := httptest.NewRecorder()
+	handler.ServeHTTP(verifyRec, verifyReq)
+
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("expected verify status %d, got %d", http.StatusOK, verifyRec.Code)
+	}
+
+	var verified struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(verifyRec.Body).Decode(&verified); err != nil {
+		t.Fatalf("expected verify response to decode, got error: %v", err)
+	}
+
+	if verified.Status != "verified" {
+		t.Fatalf("expected work item status %q, got %q", "verified", verified.Status)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created+"/history", nil)
+	historyReq.Header.Set("Authorization", "Bearer "+adminToken)
+	historyRec := httptest.NewRecorder()
+	handler.ServeHTTP(historyRec, historyReq)
+
+	var history []struct {
+		ToStatus string  `json:"toStatus"`
+		Reason   *string `json:"reason,omitempty"`
+	}
+	if err := json.NewDecoder(historyRec.Body).Decode(&history); err != nil {
+		t.Fatalf("expected history response to decode, got error: %v", err)
+	}
+
+	last := history[len(history)-1]
+	if last.ToStatus != "verified" {
+		t.Fatalf("expected last history entry toStatus %q, got %q", "verified", last.ToStatus)
+	}
+	if last.Reason == nil || *last.Reason != "Photo matches the completed fence line" {
+		t.Fatalf("expected verify note recorded on history entry, got %v", last.Reason)
+	}
+}
+
+func TestAssigneeCannotVerifyOwnSubmittedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+	submitWorkItemForReview(t, handler, assigneeToken, created)
+
+	// The dedicated /verify route is admin-only at the middleware layer,
+	// so an assignee never reaches the service — 403, not the 400 the
+	// generic PATCH /status endpoint would give for the same attempt.
+	verifyReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/verify", bytes.NewBufferString(`{}`))
+	verifyReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyRec := httptest.NewRecorder()
+	handler.ServeHTTP(verifyRec, verifyReq)
+
+	if verifyRec.Code != http.StatusForbidden {
+		t.Fatalf("expected assignee verify attempt status %d, got %d", http.StatusForbidden, verifyRec.Code)
+	}
+}
+
+func TestAdminCannotVerifyWorkItemNotYetSubmitted(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	// Still sitting in "assigned" — never accepted, started, or
+	// submitted — so this is not a legal transition regardless of role.
+	verifyReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/verify", bytes.NewBufferString(`{}`))
+	verifyReq.Header.Set("Authorization", "Bearer "+adminToken)
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyRec := httptest.NewRecorder()
+	handler.ServeHTTP(verifyRec, verifyReq)
+
+	if verifyRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected premature verify attempt status %d, got %d", http.StatusBadRequest, verifyRec.Code)
+	}
+}
+
+// submitWorkItemForReview drives an assigned work item through accept ->
+// start work -> upload evidence -> submit for review, the shared setup
+// every verify test needs before it can exercise verification itself.
+func submitWorkItemForReview(t *testing.T, handler http.Handler, assigneeToken string, workItemID string) {
+	t.Helper()
+
+	acceptReq := httptest.NewRequest(http.MethodPost, "/workitems/"+workItemID+"/assignment/accept", bytes.NewBufferString(`{}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	acceptReq.Header.Set("Content-Type", "application/json")
+	acceptRec := httptest.NewRecorder()
+	handler.ServeHTTP(acceptRec, acceptReq)
+
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept status %d, got %d", http.StatusOK, acceptRec.Code)
+	}
+
+	startReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+workItemID+"/status", bytes.NewBufferString(`{"toStatus":"in_progress"}`))
+	startReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	handler.ServeHTTP(startRec, startReq)
+
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected start work status %d, got %d", http.StatusOK, startRec.Code)
+	}
+
+	uploadBody, contentType := newMultipartUploadBody(t, "site.jpg", "evidence_photo", "fake photo bytes")
+	uploadReq := httptest.NewRequest(http.MethodPost, "/workitems/"+workItemID+"/attachments", uploadBody)
+	uploadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	uploadReq.Header.Set("Content-Type", contentType)
+	uploadRec := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRec, uploadReq)
+
+	if uploadRec.Code != http.StatusCreated {
+		t.Fatalf("expected upload status %d, got %d", http.StatusCreated, uploadRec.Code)
+	}
+
+	submitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+workItemID+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
+	submitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitRec := httptest.NewRecorder()
+	handler.ServeHTTP(submitRec, submitReq)
+
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("expected submit for review status %d, got %d", http.StatusOK, submitRec.Code)
 	}
 }
 
