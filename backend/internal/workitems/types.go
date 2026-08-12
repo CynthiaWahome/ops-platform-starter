@@ -170,6 +170,29 @@ type Assignment struct {
 	ResponseNote     *string          `json:"responseNote,omitempty"`
 }
 
+// AssignmentHistory records one assignment event on a work item —
+// OPS-040's assignment audit trail. AssignmentStore (above) only ever
+// keeps the current assignment, overwritten in place as it moves through
+// assigned -> accepted/declined; a reassignment after a decline erases
+// the previous row entirely. AssignmentHistory is append-only, mirroring
+// StatusHistory: nothing here is ever edited, so a full trail of who
+// assigned what to whom, and how each assignee responded, survives even
+// after the current assignment is overwritten.
+//
+// Action reuses AssignmentStatus rather than introducing a second enum
+// that would just duplicate it — "assigned", "accepted", "declined" mean
+// the same thing whether read off the current assignment or a history
+// row.
+type AssignmentHistory struct {
+	ID               string           `json:"id"`
+	WorkItemID       string           `json:"workItemId"`
+	Action           AssignmentStatus `json:"action"`
+	ActorUserID      string           `json:"actorUserId"`
+	AssignedToUserID string           `json:"assignedToUserId"`
+	Note             *string          `json:"note,omitempty"`
+	CreatedAt        time.Time        `json:"createdAt"`
+}
+
 type AssignInput struct {
 	AssignedToUserID string `json:"assignedToUserId"`
 }

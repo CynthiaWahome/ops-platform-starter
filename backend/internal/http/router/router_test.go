@@ -1051,6 +1051,92 @@ func TestAssigneeCannotFlagOwnSubmittedWorkItem(t *testing.T) {
 	}
 }
 
+func TestAssignmentHistoryVisibleToOwningAssigneeAndAdmin(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	created := createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	acceptReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/assignment/accept", bytes.NewBufferString(`{}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	acceptReq.Header.Set("Content-Type", "application/json")
+	acceptRec := httptest.NewRecorder()
+	handler.ServeHTTP(acceptRec, acceptReq)
+
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept status %d, got %d", http.StatusOK, acceptRec.Code)
+	}
+
+	var history []struct {
+		Action           string `json:"action"`
+		AssignedToUserID string `json:"assignedToUserId"`
+	}
+
+	// Owning assignee can read it.
+	assigneeHistoryReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created+"/assignment-history", nil)
+	assigneeHistoryReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	assigneeHistoryRec := httptest.NewRecorder()
+	handler.ServeHTTP(assigneeHistoryRec, assigneeHistoryReq)
+
+	if assigneeHistoryRec.Code != http.StatusOK {
+		t.Fatalf("expected assignee assignment-history status %d, got %d", http.StatusOK, assigneeHistoryRec.Code)
+	}
+	if err := json.NewDecoder(assigneeHistoryRec.Body).Decode(&history); err != nil {
+		t.Fatalf("expected assignment history response to decode, got error: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("expected 2 assignment history entries (assigned, accepted), got %d", len(history))
+	}
+	if history[0].Action != "assigned" || history[1].Action != "accepted" {
+		t.Fatalf("expected actions [assigned accepted], got [%s %s]", history[0].Action, history[1].Action)
+	}
+
+	// Admin can read it too.
+	adminHistoryReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created+"/assignment-history", nil)
+	adminHistoryReq.Header.Set("Authorization", "Bearer "+adminToken)
+	adminHistoryRec := httptest.NewRecorder()
+	handler.ServeHTTP(adminHistoryRec, adminHistoryReq)
+
+	if adminHistoryRec.Code != http.StatusOK {
+		t.Fatalf("expected admin assignment-history status %d, got %d", http.StatusOK, adminHistoryRec.Code)
+	}
+}
+
+func TestAssignmentHistoryOnUnownedWorkItemStaysNotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	// Created but never assigned to anyone.
+	createBody := bytes.NewBufferString(`{"title":"Not theirs","description":"Belongs to no one","priority":"low"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected created work item response to decode, got error: %v", err)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/workitems/"+created.ID+"/assignment-history", nil)
+	historyReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	historyRec := httptest.NewRecorder()
+	handler.ServeHTTP(historyRec, historyReq)
+
+	if historyRec.Code != http.StatusNotFound {
+		t.Fatalf("expected assignment history on unowned item status %d, got %d", http.StatusNotFound, historyRec.Code)
+	}
+}
+
 func TestSubmitForReviewOnUnownedWorkItemStaysNotFound(t *testing.T) {
 	t.Parallel()
 

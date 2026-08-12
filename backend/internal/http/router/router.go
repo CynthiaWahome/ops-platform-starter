@@ -18,7 +18,7 @@ func New(cfg config.Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	workItemService := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore())
+	workItemService := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore(), workitems.NewMemoryAssignmentHistoryStore())
 
 	attachmentDiskStorage, err := attachments.NewLocalDiskStorage(cfg.AttachmentUploadDir)
 	if err != nil {
@@ -103,6 +103,13 @@ func New(cfg config.Config) (http.Handler, error) {
 		httpmiddleware.RequireAuth(
 			authService,
 			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListStatusHistory), auth.RoleAdmin, auth.RoleAssignee),
+		),
+	)
+	mux.Handle(
+		"GET /workitems/{id}/assignment-history",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListAssignmentHistory), auth.RoleAdmin, auth.RoleAssignee),
 		),
 	)
 	mux.Handle(

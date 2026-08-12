@@ -300,6 +300,33 @@ func (h WorkItemHandler) ListStatusHistory(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, history)
 }
 
+// ListAssignmentHistory is ListStatusHistory's OPS-040 counterpart for
+// assignment events — same scoping, same error mapping, different
+// service method and response shape.
+func (h WorkItemHandler) ListAssignmentHistory(w http.ResponseWriter, r *http.Request) {
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	history, err := h.service.ListAssignmentHistory(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
+	if err != nil {
+		switch {
+		case errors.Is(err, workitems.ErrInvalidInput):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to fetch assignment history"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, history)
+}
+
 func (h WorkItemHandler) Assign(w http.ResponseWriter, r *http.Request) {
 	var input workitems.AssignInput
 
