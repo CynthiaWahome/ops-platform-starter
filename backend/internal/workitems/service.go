@@ -7,18 +7,20 @@ import (
 )
 
 type Service struct {
-	store           Store
-	historyStore    StatusHistoryStore
-	assignmentStore AssignmentStore
-	now             func() time.Time
+	store                  Store
+	historyStore           StatusHistoryStore
+	assignmentStore        AssignmentStore
+	assignmentHistoryStore AssignmentHistoryStore
+	now                    func() time.Time
 }
 
-func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore) Service {
+func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore, assignmentHistoryStore AssignmentHistoryStore) Service {
 	return Service{
-		store:           store,
-		historyStore:    historyStore,
-		assignmentStore: assignmentStore,
-		now:             time.Now,
+		store:                  store,
+		historyStore:           historyStore,
+		assignmentStore:        assignmentStore,
+		assignmentHistoryStore: assignmentHistoryStore,
+		now:                    time.Now,
 	}
 }
 
@@ -242,6 +244,32 @@ func (s Service) recordStatusChange(ctx context.Context, workItemID string, from
 	return err
 }
 
+// recordAssignmentEvent writes one AssignmentHistory entry — the
+// AssignmentHistory equivalent of recordStatusChange above. Both
+// AssignWorkItem and RespondToAssignment call this instead of each
+// keeping their own copy of "how to turn an assignment event into a
+// history row."
+func (s Service) recordAssignmentEvent(ctx context.Context, workItemID string, action AssignmentStatus, actorUserID string, assignedToUserID string, rawNote *string, at time.Time) error {
+	var note *string
+	if rawNote != nil {
+		trimmed := strings.TrimSpace(*rawNote)
+		if trimmed != "" {
+			note = &trimmed
+		}
+	}
+
+	_, err := s.assignmentHistoryStore.Create(ctx, AssignmentHistory{
+		WorkItemID:       workItemID,
+		Action:           action,
+		ActorUserID:      actorUserID,
+		AssignedToUserID: assignedToUserID,
+		Note:             note,
+		CreatedAt:        at,
+	})
+
+	return err
+}
+
 // ListStatusHistory returns every status change recorded for a work item,
 // oldest first. It confirms the work item exists before checking history so
 // callers get a consistent ErrNotFound instead of an empty list for a
@@ -263,6 +291,28 @@ func (s Service) ListStatusHistory(ctx context.Context, workItemID string, calle
 	}
 
 	return s.historyStore.ListByWorkItemID(ctx, workItemID)
+}
+
+// ListAssignmentHistory returns every assignment event recorded for a
+// work item, oldest first — the OPS-040 audit trail. Scoped identically
+// to ListStatusHistory: an admin sees any work item's assignment
+// history, a non-admin caller only sees it for a work item currently
+// assigned to them.
+func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool) ([]AssignmentHistory, error) {
+	if strings.TrimSpace(workItemID) == "" {
+		return nil, ErrInvalidInput
+	}
+
+	item, err := s.store.GetByID(ctx, workItemID)
+	if err != nil {
+		return nil, err
+	}
+
+	if !callerIsAdmin && (item.AssignedToUserID == nil || *item.AssignedToUserID != callerUserID) {
+		return nil, ErrNotFound
+	}
+
+	return s.assignmentHistoryStore.ListByWorkItemID(ctx, workItemID)
 }
 
 // AssignWorkItem gives a work item to an assignee. It reuses the same
@@ -301,13 +351,22 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 		return Assignment{}, err
 	}
 
-	return s.assignmentStore.Create(ctx, Assignment{
+	assignment, err := s.assignmentStore.Create(ctx, Assignment{
 		WorkItemID:       workItemID,
 		AssignedByUserID: assignedByUserID,
 		AssignedToUserID: assignedToUserID,
 		Status:           AssignmentStatusAssigned,
 		AssignedAt:       now,
 	})
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	if err := s.recordAssignmentEvent(ctx, workItemID, AssignmentStatusAssigned, assignedByUserID, assignedToUserID, nil, now); err != nil {
+		return Assignment{}, err
+	}
+
+	return assignment, nil
 }
 
 // GetAssignment returns the current assignment for a work item. It confirms
@@ -408,7 +467,16 @@ func (s Service) RespondToAssignment(ctx context.Context, workItemID string, res
 	assignment.RespondedAt = ptrTime(now)
 	assignment.ResponseNote = note
 
-	return s.assignmentStore.Update(ctx, assignment)
+	updated, err := s.assignmentStore.Update(ctx, assignment)
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	if err := s.recordAssignmentEvent(ctx, workItemID, assignmentStatus, respondingUserID, assignment.AssignedToUserID, input.Note, now); err != nil {
+		return Assignment{}, err
+	}
+
+	return updated, nil
 }
 
 func (s Service) WithClock(now func() time.Time) Service {
