@@ -592,6 +592,67 @@ func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing
 	}
 }
 
+func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore())
+
+	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	if _, err := service.RespondToAssignment(context.Background(), item.ID, "user-assignee-001", true, RespondToAssignmentInput{}); err != nil {
+		t.Fatalf("expected accept to succeed, got error: %v", err)
+	}
+
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+		ToStatus: StatusInProgress,
+	}); err != nil {
+		t.Fatalf("expected assignee to start work, got error: %v", err)
+	}
+
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+		ToStatus: StatusSubmittedForReview,
+	}); err != nil {
+		t.Fatalf("expected assignee to submit for review, got error: %v", err)
+	}
+
+	// Admin flags it back — this is the one leg of the flag flow that
+	// stays admin-only, exercised here as plain ChangeStatus since the
+	// handler-level "note is required" rule lives in the HTTP layer, not
+	// the service.
+	feedback := "Photo is blurry, retake before resubmitting"
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, ChangeStatusInput{
+		ToStatus: StatusFlagged,
+		Reason:   &feedback,
+	}); err != nil {
+		t.Fatalf("expected admin to flag, got error: %v", err)
+	}
+
+	// OPS-033: the assignee can now pick the rework back up themselves —
+	// Flagged -> InProgress — without waiting on an admin to move it,
+	// closing the gap between the design doc and the code.
+	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+		ToStatus: StatusInProgress,
+	})
+	if err != nil {
+		t.Fatalf("expected assignee to rework flagged item, got error: %v", err)
+	}
+
+	if updated.Status != StatusInProgress {
+		t.Fatalf("expected status %q, got %q", StatusInProgress, updated.Status)
+	}
+}
+
 func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T) {
 	t.Parallel()
 

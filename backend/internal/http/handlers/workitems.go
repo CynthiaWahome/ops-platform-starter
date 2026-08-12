@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/attachments"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
@@ -220,6 +221,53 @@ func (h WorkItemHandler) Verify(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
 		default:
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to verify work item"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, item)
+}
+
+// Flag is Verify's sibling for the rejection path: a purpose-built,
+// admin-only front door onto SubmittedForReview -> Flagged. Unlike
+// Verify, the feedback note is mandatory — flagging without saying why
+// leaves the assignee stuck, so this handler rejects an empty note
+// before it ever reaches ChangeStatus, the same "check the business rule
+// before touching the service" layering OPS-031 established for the
+// evidence-required check.
+func (h WorkItemHandler) Flag(w http.ResponseWriter, r *http.Request) {
+	var input workitems.FlagInput
+
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	note := strings.TrimSpace(input.Note)
+	if note == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "feedback note is required when flagging a work item"})
+		return
+	}
+
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), workitems.ChangeStatusInput{
+		ToStatus: workitems.StatusFlagged,
+		Reason:   &note,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		case errors.Is(err, workitems.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to flag work item"})
 		}
 
 		return
