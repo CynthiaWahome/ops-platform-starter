@@ -60,6 +60,14 @@ func NewBootstrapService(cfg config.Config) (Service, error) {
 			Roles:       []Role{RoleAssignee},
 			IsActive:    true,
 		},
+		{
+			ID:          "user-supervisor-001",
+			Identifier:  cfg.BootstrapSupervisorIdentifier,
+			DisplayName: cfg.BootstrapSupervisorDisplayName,
+			Password:    cfg.BootstrapSupervisorPassword,
+			Roles:       []Role{RoleSupervisor},
+			IsActive:    true,
+		},
 	})
 	if err != nil {
 		return Service{}, err
