@@ -90,6 +90,25 @@ func (s *PostgresStore) ListByAssignedToUserID(ctx context.Context, userID strin
 	return scanWorkItems(rows)
 }
 
+// ListByCreatedByUserID is ListByAssignedToUserID's OPS-047 sibling — same
+// shape, keyed off created_by_user_id instead.
+func (s *PostgresStore) ListByCreatedByUserID(ctx context.Context, userID string) ([]WorkItem, error) {
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `
+		SELECT id, reference_code, title, description, status, priority,
+			created_by_user_id, assigned_to_user_id, location_text, due_at,
+			created_at, updated_at
+		FROM work_items
+		WHERE created_by_user_id = $1
+		ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("workitems: list by creator: %w", err)
+	}
+	defer rows.Close()
+
+	return scanWorkItems(rows)
+}
+
 func (s *PostgresStore) GetByID(ctx context.Context, id string) (WorkItem, error) {
 	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		SELECT id, reference_code, title, description, status, priority,

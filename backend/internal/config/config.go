@@ -20,6 +20,9 @@ type Config struct {
 	BootstrapSupervisorIdentifier  string
 	BootstrapSupervisorPassword    string
 	BootstrapSupervisorDisplayName string
+	BootstrapRequesterIdentifier   string
+	BootstrapRequesterPassword     string
+	BootstrapRequesterDisplayName  string
 	AttachmentUploadDir            string
 	// DatabaseURL is empty by default — an empty string means "no
 	// Postgres configured," and router.New falls back to the in-memory
@@ -48,6 +51,12 @@ func Load() Config {
 		BootstrapSupervisorDisplayName: getEnv(
 			"BOOTSTRAP_SUPERVISOR_DISPLAY_NAME",
 			"Team Supervisor",
+		),
+		BootstrapRequesterIdentifier: getEnv("BOOTSTRAP_REQUESTER_IDENTIFIER", "requester@ops.local"),
+		BootstrapRequesterPassword:   getEnv("BOOTSTRAP_REQUESTER_PASSWORD", "ChangeMe123!"),
+		BootstrapRequesterDisplayName: getEnv(
+			"BOOTSTRAP_REQUESTER_DISPLAY_NAME",
+			"Requesting Customer",
 		),
 		AttachmentUploadDir: getEnv("ATTACHMENT_UPLOAD_DIR", "uploads"),
 		DatabaseURL:         getEnv("DATABASE_URL", ""),

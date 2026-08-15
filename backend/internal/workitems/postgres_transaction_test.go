@@ -53,7 +53,7 @@ func TestAssignWorkItemRollsBackEntirelyOnFailure(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.AssignWorkItem(ctx, item.ID, "user-admin-001", false, AssignInput{
+	_, err = service.AssignWorkItem(ctx, item.ID, "user-admin-001", true, false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	})
 	if err == nil {
@@ -111,7 +111,7 @@ func TestAssignWorkItemRollsBackEntirelyOnFailure(t *testing.T) {
 		db.PoolTxRunner{Pool: pool},
 	)
 
-	if _, err := realService.AssignWorkItem(ctx, item.ID, "user-admin-001", false, AssignInput{
+	if _, err := realService.AssignWorkItem(ctx, item.ID, "user-admin-001", true, false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected retry after rollback to succeed, got error: %v", err)

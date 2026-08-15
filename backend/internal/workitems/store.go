@@ -12,6 +12,11 @@ type Store interface {
 	Create(ctx context.Context, item WorkItem) (WorkItem, error)
 	List(ctx context.Context) ([]WorkItem, error)
 	ListByAssignedToUserID(ctx context.Context, userID string) ([]WorkItem, error)
+	// ListByCreatedByUserID is ListByAssignedToUserID's OPS-047 sibling —
+	// a requester's visibility is scoped by who created the work item,
+	// not who it's assigned to (a requester never has anything assigned
+	// to them; they're the one asking for work, not doing it).
+	ListByCreatedByUserID(ctx context.Context, userID string) ([]WorkItem, error)
 	GetByID(ctx context.Context, id string) (WorkItem, error)
 	Update(ctx context.Context, item WorkItem) (WorkItem, error)
 }
@@ -73,6 +78,28 @@ func (s *MemoryStore) ListByAssignedToUserID(_ context.Context, userID string) (
 	for _, id := range s.ordered {
 		item := s.byID[id]
 		if item.AssignedToUserID != nil && *item.AssignedToUserID == userID {
+			items = append(items, cloneWorkItem(item))
+		}
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+
+	return items, nil
+}
+
+// ListByCreatedByUserID returns only the work items a given user created,
+// newest first — same shape and same reasoning as ListByAssignedToUserID,
+// just keyed off CreatedByUserID instead of AssignedToUserID.
+func (s *MemoryStore) ListByCreatedByUserID(_ context.Context, userID string) ([]WorkItem, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]WorkItem, 0)
+	for _, id := range s.ordered {
+		item := s.byID[id]
+		if item.CreatedByUserID == userID {
 			items = append(items, cloneWorkItem(item))
 		}
 	}

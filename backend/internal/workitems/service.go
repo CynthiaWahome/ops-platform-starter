@@ -125,13 +125,16 @@ func (s Service) Create(ctx context.Context, createdByUserID string, input Creat
 // item. A supervisor (OPS-045) sees work items currently assigned to
 // anyone on a team they actively supervise, plus their own not-yet-assigned
 // work — the same "own team, plus own unassigned drafts" shape
-// supervisorMayActOn uses for actions. A plain caller (assignee) only sees
-// work items currently assigned to them — the "assignee sees own assigned
-// work only" rule from the starter's permission matrix. The workitems
-// package deliberately doesn't import the auth package, so the caller (the
-// HTTP handler, which does know about roles) resolves "is this an admin /
-// supervisor" into plain bools before calling this method.
-func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) ([]WorkItem, error) {
+// supervisorMayActOn uses for actions. A requester (OPS-047) sees only
+// work items they created — they never have anything assigned to them,
+// so ListByCreatedByUserID rather than ListByAssignedToUserID is the
+// right scope. A plain caller (assignee) only sees work items currently
+// assigned to them — the "assignee sees own assigned work only" rule from
+// the starter's permission matrix. The workitems package deliberately
+// doesn't import the auth package, so the caller (the HTTP handler, which
+// does know about roles) resolves "is this an admin / supervisor /
+// requester" into plain bools before calling this method.
+func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool, callerIsRequester bool) ([]WorkItem, error) {
 	if callerIsAdmin {
 		return s.store.List(ctx)
 	}
@@ -142,6 +145,10 @@ func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bo
 
 	if callerIsSupervisor {
 		return s.listForSupervisor(ctx, callerUserID)
+	}
+
+	if callerIsRequester {
+		return s.store.ListByCreatedByUserID(ctx, callerUserID)
 	}
 
 	return s.store.ListByAssignedToUserID(ctx, callerUserID)
@@ -194,7 +201,19 @@ func (s Service) listForSupervisor(ctx context.Context, callerUserID string) ([]
 // their point of view the work item does not exist, rather than
 // existing-but-hidden. This avoids revealing that a given id belongs to
 // someone else.
-func (s Service) GetByID(ctx context.Context, id string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) (WorkItem, error) {
+//
+// Precedence — admin, then supervisor, then requester, then assignee —
+// must match List's exactly. A review on PR #59 caught this: GetByID used
+// to check requester before supervisor, the opposite of List's order. For
+// a principal holding both supervisor and requester roles (the data model
+// allows a User to hold multiple Roles, even though no bootstrap seed
+// does), that meant an item List returned via the supervisor branch could
+// come back ErrNotFound from GetByID because the requester branch ran
+// first and rejected it — the same item, visible through one endpoint and
+// not the other. supervisorMayActOn already covers "my own not-yet-
+// assigned creation" (see its own doc comment), so checking supervisor
+// first doesn't lose anything the requester branch would have granted.
+func (s Service) GetByID(ctx context.Context, id string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool, callerIsRequester bool) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
@@ -214,6 +233,14 @@ func (s Service) GetByID(ctx context.Context, id string, callerUserID string, ca
 			return WorkItem{}, err
 		}
 		if !allowed {
+			return WorkItem{}, ErrNotFound
+		}
+
+		return item, nil
+	}
+
+	if callerIsRequester {
+		if item.CreatedByUserID != callerUserID {
 			return WorkItem{}, ErrNotFound
 		}
 
@@ -343,7 +370,7 @@ func (s Service) Update(ctx context.Context, id string, callerUserID string, cal
 // exist" rule as GetByID), and the move itself must be one of the few
 // IsAssigneeAllowedTransition grants — issue #42, "start work" and "submit
 // progress update" from the permission matrix, nothing wider.
-func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string, actorIsAdmin bool, actorIsSupervisor bool, input ChangeStatusInput) (WorkItem, error) {
+func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string, actorIsAdmin bool, actorIsSupervisor bool, actorIsRequester bool, input ChangeStatusInput) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(actorUserID) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
@@ -393,6 +420,19 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 			if !IsValidTransition(item.Status, input.ToStatus) {
 				return ErrInvalidTransition
 			}
+		case actorIsRequester:
+			// A review on PR #59 caught the real gap this closes:
+			// AssignWorkItem never validates that its target is
+			// actually an assignee — nothing stops admin/supervisor
+			// from (accidentally) setting AssignedToUserID to a
+			// requester's own user id. Without this explicit case, a
+			// requester who ended up assigned that way would fall
+			// into the default branch below, which only checks
+			// ownership (AssignedToUserID == actorUserID) — not role
+			// — and would be treated exactly like a real assignee.
+			// Requester is never allowed to act on a work item's
+			// status under any circumstance, assigned to them or not.
+			return ErrNotFound
 		default:
 			if item.AssignedToUserID == nil || *item.AssignedToUserID != actorUserID {
 				return ErrNotFound
@@ -631,7 +671,15 @@ func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, c
 // team — supervisorMayActOn closes that: only the item's own creator (or
 // admin) may assign it in the first place. An admin caller is
 // unrestricted, as before.
-func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, assignedByIsSupervisor bool, input AssignInput) (Assignment, error) {
+//
+// assignedByIsAdmin exists explicitly (OPS-047), rather than treating
+// "not a supervisor" as "must be admin," the way this method's signature
+// used to work. That shortcut was safe only as long as exactly two roles
+// could ever reach this method — the moment a third, unprivileged role
+// (requester) existed, "not supervisor" silently meant "unrestricted,"
+// which would have let a requester assign anyone to anything. The default
+// case below now explicitly rejects any caller who is neither.
+func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, assignedByIsAdmin bool, assignedByIsSupervisor bool, input AssignInput) (Assignment, error) {
 	assignedToUserID := strings.TrimSpace(input.AssignedToUserID)
 
 	if strings.TrimSpace(workItemID) == "" || strings.TrimSpace(assignedByUserID) == "" || assignedToUserID == "" {
@@ -654,7 +702,10 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 			return err
 		}
 
-		if assignedByIsSupervisor {
+		switch {
+		case assignedByIsAdmin:
+			// unrestricted
+		case assignedByIsSupervisor:
 			allowed, err := s.supervisorMayActOn(ctx, assignedByUserID, item)
 			if err != nil {
 				return err
@@ -674,6 +725,8 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 			if !destinationAllowed {
 				return ErrNotFound
 			}
+		default:
+			return ErrNotFound
 		}
 
 		if !IsValidTransition(item.Status, StatusAssigned) {
@@ -757,9 +810,20 @@ func (s Service) GetAssignment(ctx context.Context, workItemID string, callerUse
 // the ownership check that role middleware alone cannot make, since
 // middleware only knows the caller's role, not which specific work item
 // they were assigned.
-func (s Service) RespondToAssignment(ctx context.Context, workItemID string, respondingUserID string, accept bool, input RespondToAssignmentInput) (Assignment, error) {
+//
+// respondingUserIsRequester exists for the same reason ChangeStatus's
+// actorIsRequester case does (PR #59): AssignWorkItem never validates its
+// target's actual role, so nothing stops a work item from ending up
+// assigned to a requester by mistake. Ownership alone (the check above)
+// isn't a role check — a requester who matched AssignedToUserID would
+// otherwise be able to accept/decline exactly like a real assignee.
+func (s Service) RespondToAssignment(ctx context.Context, workItemID string, respondingUserID string, respondingUserIsRequester bool, accept bool, input RespondToAssignmentInput) (Assignment, error) {
 	if strings.TrimSpace(workItemID) == "" || strings.TrimSpace(respondingUserID) == "" {
 		return Assignment{}, ErrInvalidInput
+	}
+
+	if respondingUserIsRequester {
+		return Assignment{}, ErrNotFound
 	}
 
 	// Same multi-store reasoning as ChangeStatus/AssignWorkItem — writes
