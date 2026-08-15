@@ -124,9 +124,25 @@ npm run dev
 ```bash
 cd backend
 go mod tidy
+go run ./cmd/api
 ```
 
-The backend is still scaffold-level and does not yet expose application routes.
+By default this runs entirely in memory — no database required, data resets
+every restart. That's deliberate: every test, and every first-time `go run`,
+should work with zero setup.
+
+To run against real Postgres instead (OPS-048):
+
+```bash
+cd backend
+docker compose up -d
+DATABASE_URL="postgres://postgres:postgres@localhost:5432/ops_platform?sslmode=disable" go run ./cmd/api
+```
+
+Setting `DATABASE_URL` is what opts a run into real, restart-surviving
+persistence — the schema is migrated automatically on startup (see
+`internal/db`). See `.env.example` for every other configurable value
+(bootstrap users, JWT secret, etc.).
 
 ## Development approach
 

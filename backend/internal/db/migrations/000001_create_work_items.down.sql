@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS work_items;
+DROP SEQUENCE IF EXISTS work_items_seq;

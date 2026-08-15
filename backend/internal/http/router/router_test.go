@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -1487,7 +1488,7 @@ func newMultipartUploadBody(t *testing.T, filename, kind, content string) (*byte
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
-	handler, err := New(config.Config{
+	handler, _, err := New(context.Background(), config.Config{
 		Port:                           "8080",
 		AppEnv:                         "test",
 		AuthTokenSecret:                "test-secret",

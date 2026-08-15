@@ -28,6 +28,22 @@ type NotificationSink interface {
 	Notify(ctx context.Context, recipientUserID, workItemID, kind, message string) error
 }
 
+// TxRunner lets a multi-store workflow method (AssignWorkItem, ChangeStatus,
+// RespondToAssignment — every method that writes to more than one store in
+// a single call) run its whole sequence of store writes as one atomic
+// unit, when the underlying stores support real transactions. Defined
+// here, at the point of consumption, satisfied structurally by
+// db.PoolTxRunner with no import of db needed here. nil (the default —
+// what every Service built with the in-memory stores gets, since there's
+// nothing there for a transaction to make atomic: independent mutex-guarded
+// map writes don't have the partial-failure mode multi-statement SQL does)
+// is treated as "no transaction support," and every method that uses it
+// degrades to calling straight through — exactly the behavior every
+// caller had before this existed.
+type TxRunner interface {
+	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 type Service struct {
 	store                  Store
 	historyStore           StatusHistoryStore
@@ -35,10 +51,11 @@ type Service struct {
 	assignmentHistoryStore AssignmentHistoryStore
 	notifier               NotificationSink
 	teamAuthority          TeamAuthority
+	txRunner               TxRunner
 	now                    func() time.Time
 }
 
-func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore, assignmentHistoryStore AssignmentHistoryStore, notifier NotificationSink, teamAuthority TeamAuthority) Service {
+func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore, assignmentHistoryStore AssignmentHistoryStore, notifier NotificationSink, teamAuthority TeamAuthority, txRunner TxRunner) Service {
 	return Service{
 		store:                  store,
 		historyStore:           historyStore,
@@ -46,8 +63,20 @@ func NewService(store Store, historyStore StatusHistoryStore, assignmentStore As
 		assignmentHistoryStore: assignmentHistoryStore,
 		notifier:               notifier,
 		teamAuthority:          teamAuthority,
+		txRunner:               txRunner,
 		now:                    time.Now,
 	}
+}
+
+// runAtomic is the one place ChangeStatus/AssignWorkItem/RespondToAssignment
+// reach for transactional grouping — see TxRunner's doc comment for why nil
+// is a safe, common, and correct value here.
+func (s Service) runAtomic(ctx context.Context, fn func(ctx context.Context) error) error {
+	if s.txRunner == nil {
+		return fn(ctx)
+	}
+
+	return s.txRunner.WithTx(ctx, fn)
 }
 
 func (s Service) Create(ctx context.Context, createdByUserID string, input CreateInput) (WorkItem, error) {
@@ -334,57 +363,71 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 		return WorkItem{}, ErrFeedbackRequired
 	}
 
-	item, err := s.store.GetByID(ctx, id)
-	if err != nil {
-		return WorkItem{}, err
-	}
+	// Everything from here on writes to at least two stores (work_items,
+	// status_history, and sometimes notifications) — wrapped in runAtomic
+	// so a Postgres-backed Service either commits all of it or none of it.
+	// See TxRunner's doc comment for why nil (in-memory stores) just runs
+	// this closure directly with no transaction involved.
+	var updated WorkItem
 
-	switch {
-	case actorIsAdmin:
-		if !IsValidTransition(item.Status, input.ToStatus) {
-			return WorkItem{}, ErrInvalidTransition
-		}
-	case actorIsSupervisor:
-		allowed, err := s.supervisorMayActOn(ctx, actorUserID, item)
+	err := s.runAtomic(ctx, func(ctx context.Context) error {
+		item, err := s.store.GetByID(ctx, id)
 		if err != nil {
-			return WorkItem{}, err
-		}
-		if !allowed {
-			return WorkItem{}, ErrNotFound
+			return err
 		}
 
-		if !IsValidTransition(item.Status, input.ToStatus) {
-			return WorkItem{}, ErrInvalidTransition
+		switch {
+		case actorIsAdmin:
+			if !IsValidTransition(item.Status, input.ToStatus) {
+				return ErrInvalidTransition
+			}
+		case actorIsSupervisor:
+			allowed, err := s.supervisorMayActOn(ctx, actorUserID, item)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return ErrNotFound
+			}
+
+			if !IsValidTransition(item.Status, input.ToStatus) {
+				return ErrInvalidTransition
+			}
+		default:
+			if item.AssignedToUserID == nil || *item.AssignedToUserID != actorUserID {
+				return ErrNotFound
+			}
+
+			if !IsAssigneeAllowedTransition(item.Status, input.ToStatus) {
+				return ErrInvalidTransition
+			}
 		}
-	default:
-		if item.AssignedToUserID == nil || *item.AssignedToUserID != actorUserID {
-			return WorkItem{}, ErrNotFound
+
+		fromStatus := item.Status
+		now := s.now()
+
+		item.Status = input.ToStatus
+		item.UpdatedAt = now
+
+		updated, err = s.store.Update(ctx, item)
+		if err != nil {
+			return err
 		}
 
-		if !IsAssigneeAllowedTransition(item.Status, input.ToStatus) {
-			return WorkItem{}, ErrInvalidTransition
+		if err := s.recordStatusChange(ctx, id, fromStatus, input.ToStatus, actorUserID, input.Reason, now); err != nil {
+			return err
 		}
-	}
 
-	fromStatus := item.Status
-	now := s.now()
+		if recipientUserID, kind, message, ok := notificationForStatusChange(updated); ok {
+			if err := s.notify(ctx, recipientUserID, id, kind, message); err != nil {
+				return err
+			}
+		}
 
-	item.Status = input.ToStatus
-	item.UpdatedAt = now
-
-	updated, err := s.store.Update(ctx, item)
+		return nil
+	})
 	if err != nil {
 		return WorkItem{}, err
-	}
-
-	if err := s.recordStatusChange(ctx, id, fromStatus, input.ToStatus, actorUserID, input.Reason, now); err != nil {
-		return WorkItem{}, err
-	}
-
-	if recipientUserID, kind, message, ok := notificationForStatusChange(updated); ok {
-		if err := s.notify(ctx, recipientUserID, id, kind, message); err != nil {
-			return WorkItem{}, err
-		}
 	}
 
 	return updated, nil
@@ -595,68 +638,81 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 		return Assignment{}, ErrInvalidInput
 	}
 
-	item, err := s.store.GetByID(ctx, workItemID)
-	if err != nil {
-		return Assignment{}, err
-	}
+	// Same reasoning as ChangeStatus: this writes to work_items,
+	// status_history, assignments, assignment_history, and notifications
+	// — four different stores — so it runs inside runAtomic. This is the
+	// exact scenario a review on PR #57 called out by name: without this,
+	// a failure on (say) the assignment_history write left the work item
+	// already marked assigned with no assignment record at all, and a
+	// retry got rejected by IsValidTransition below since the item wasn't
+	// in StatusCreated anymore.
+	var assignment Assignment
 
-	if assignedByIsSupervisor {
-		allowed, err := s.supervisorMayActOn(ctx, assignedByUserID, item)
+	err := s.runAtomic(ctx, func(ctx context.Context) error {
+		item, err := s.store.GetByID(ctx, workItemID)
 		if err != nil {
-			return Assignment{}, err
-		}
-		if !allowed {
-			return Assignment{}, ErrNotFound
+			return err
 		}
 
-		if s.teamAuthority == nil {
-			return Assignment{}, ErrNotFound
+		if assignedByIsSupervisor {
+			allowed, err := s.supervisorMayActOn(ctx, assignedByUserID, item)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return ErrNotFound
+			}
+
+			if s.teamAuthority == nil {
+				return ErrNotFound
+			}
+
+			destinationAllowed, err := s.teamAuthority.IsActiveSupervisorOf(ctx, assignedByUserID, assignedToUserID)
+			if err != nil {
+				return err
+			}
+			if !destinationAllowed {
+				return ErrNotFound
+			}
 		}
 
-		destinationAllowed, err := s.teamAuthority.IsActiveSupervisorOf(ctx, assignedByUserID, assignedToUserID)
+		if !IsValidTransition(item.Status, StatusAssigned) {
+			return ErrInvalidTransition
+		}
+
+		fromStatus := item.Status
+		now := s.now()
+
+		item.Status = StatusAssigned
+		item.AssignedToUserID = &assignedToUserID
+		item.UpdatedAt = now
+
+		if _, err := s.store.Update(ctx, item); err != nil {
+			return err
+		}
+
+		if err := s.recordStatusChange(ctx, workItemID, fromStatus, StatusAssigned, assignedByUserID, nil, now); err != nil {
+			return err
+		}
+
+		assignment, err = s.assignmentStore.Create(ctx, Assignment{
+			WorkItemID:       workItemID,
+			AssignedByUserID: assignedByUserID,
+			AssignedToUserID: assignedToUserID,
+			Status:           AssignmentStatusAssigned,
+			AssignedAt:       now,
+		})
 		if err != nil {
-			return Assignment{}, err
+			return err
 		}
-		if !destinationAllowed {
-			return Assignment{}, ErrNotFound
+
+		if err := s.recordAssignmentEvent(ctx, workItemID, AssignmentStatusAssigned, assignedByUserID, assignedToUserID, nil, now); err != nil {
+			return err
 		}
-	}
 
-	if !IsValidTransition(item.Status, StatusAssigned) {
-		return Assignment{}, ErrInvalidTransition
-	}
-
-	fromStatus := item.Status
-	now := s.now()
-
-	item.Status = StatusAssigned
-	item.AssignedToUserID = &assignedToUserID
-	item.UpdatedAt = now
-
-	if _, err := s.store.Update(ctx, item); err != nil {
-		return Assignment{}, err
-	}
-
-	if err := s.recordStatusChange(ctx, workItemID, fromStatus, StatusAssigned, assignedByUserID, nil, now); err != nil {
-		return Assignment{}, err
-	}
-
-	assignment, err := s.assignmentStore.Create(ctx, Assignment{
-		WorkItemID:       workItemID,
-		AssignedByUserID: assignedByUserID,
-		AssignedToUserID: assignedToUserID,
-		Status:           AssignmentStatusAssigned,
-		AssignedAt:       now,
+		return s.notify(ctx, assignedToUserID, workItemID, "assignment_created", item.ReferenceCode+" was assigned to you")
 	})
 	if err != nil {
-		return Assignment{}, err
-	}
-
-	if err := s.recordAssignmentEvent(ctx, workItemID, AssignmentStatusAssigned, assignedByUserID, assignedToUserID, nil, now); err != nil {
-		return Assignment{}, err
-	}
-
-	if err := s.notify(ctx, assignedToUserID, workItemID, "assignment_created", item.ReferenceCode+" was assigned to you"); err != nil {
 		return Assignment{}, err
 	}
 
@@ -706,82 +762,92 @@ func (s Service) RespondToAssignment(ctx context.Context, workItemID string, res
 		return Assignment{}, ErrInvalidInput
 	}
 
-	item, err := s.store.GetByID(ctx, workItemID)
-	if err != nil {
-		return Assignment{}, err
-	}
+	// Same multi-store reasoning as ChangeStatus/AssignWorkItem — writes
+	// to work_items, status_history, assignments, assignment_history, and
+	// sometimes notifications, so it runs inside runAtomic.
+	var updated Assignment
 
-	assignment, err := s.assignmentStore.GetByWorkItemID(ctx, workItemID)
-	if err != nil {
-		return Assignment{}, err
-	}
-
-	if assignment.AssignedToUserID != respondingUserID {
-		return Assignment{}, ErrAssignmentNotOwned
-	}
-
-	if assignment.Status != AssignmentStatusAssigned {
-		return Assignment{}, ErrAssignmentNotPending
-	}
-
-	toStatus := StatusCreated
-	assignmentStatus := AssignmentStatusDeclined
-	if accept {
-		toStatus = StatusAccepted
-		assignmentStatus = AssignmentStatusAccepted
-	}
-
-	if !IsValidTransition(item.Status, toStatus) {
-		return Assignment{}, ErrInvalidTransition
-	}
-
-	fromStatus := item.Status
-	now := s.now()
-
-	item.Status = toStatus
-	item.UpdatedAt = now
-
-	if !accept {
-		item.AssignedToUserID = nil
-	}
-
-	if _, err := s.store.Update(ctx, item); err != nil {
-		return Assignment{}, err
-	}
-
-	if err := s.recordStatusChange(ctx, workItemID, fromStatus, toStatus, respondingUserID, input.Note, now); err != nil {
-		return Assignment{}, err
-	}
-
-	var note *string
-	if input.Note != nil {
-		trimmed := strings.TrimSpace(*input.Note)
-		if trimmed != "" {
-			note = &trimmed
+	err := s.runAtomic(ctx, func(ctx context.Context) error {
+		item, err := s.store.GetByID(ctx, workItemID)
+		if err != nil {
+			return err
 		}
-	}
 
-	assignment.Status = assignmentStatus
-	assignment.RespondedAt = ptrTime(now)
-	assignment.ResponseNote = note
+		assignment, err := s.assignmentStore.GetByWorkItemID(ctx, workItemID)
+		if err != nil {
+			return err
+		}
 
-	updated, err := s.assignmentStore.Update(ctx, assignment)
+		if assignment.AssignedToUserID != respondingUserID {
+			return ErrAssignmentNotOwned
+		}
+
+		if assignment.Status != AssignmentStatusAssigned {
+			return ErrAssignmentNotPending
+		}
+
+		toStatus := StatusCreated
+		assignmentStatus := AssignmentStatusDeclined
+		if accept {
+			toStatus = StatusAccepted
+			assignmentStatus = AssignmentStatusAccepted
+		}
+
+		if !IsValidTransition(item.Status, toStatus) {
+			return ErrInvalidTransition
+		}
+
+		fromStatus := item.Status
+		now := s.now()
+
+		item.Status = toStatus
+		item.UpdatedAt = now
+
+		if !accept {
+			item.AssignedToUserID = nil
+		}
+
+		if _, err := s.store.Update(ctx, item); err != nil {
+			return err
+		}
+
+		if err := s.recordStatusChange(ctx, workItemID, fromStatus, toStatus, respondingUserID, input.Note, now); err != nil {
+			return err
+		}
+
+		var note *string
+		if input.Note != nil {
+			trimmed := strings.TrimSpace(*input.Note)
+			if trimmed != "" {
+				note = &trimmed
+			}
+		}
+
+		assignment.Status = assignmentStatus
+		assignment.RespondedAt = ptrTime(now)
+		assignment.ResponseNote = note
+
+		updated, err = s.assignmentStore.Update(ctx, assignment)
+		if err != nil {
+			return err
+		}
+
+		if err := s.recordAssignmentEvent(ctx, workItemID, assignmentStatus, respondingUserID, assignment.AssignedToUserID, input.Note, now); err != nil {
+			return err
+		}
+
+		// Declining isn't in the Event Hooks list — only acceptance is.
+		// The admin who made a doomed assignment finds out by checking,
+		// same as today; nobody's waiting on a decline the way they're
+		// waiting on an accept.
+		if accept {
+			return s.notify(ctx, assignment.AssignedByUserID, workItemID, "assignment_accepted", item.ReferenceCode+" was accepted by the assignee")
+		}
+
+		return nil
+	})
 	if err != nil {
 		return Assignment{}, err
-	}
-
-	if err := s.recordAssignmentEvent(ctx, workItemID, assignmentStatus, respondingUserID, assignment.AssignedToUserID, input.Note, now); err != nil {
-		return Assignment{}, err
-	}
-
-	// Declining isn't in the Event Hooks list — only acceptance is. The
-	// admin who made a doomed assignment finds out by checking, same as
-	// today; nobody's waiting on a decline the way they're waiting on an
-	// accept.
-	if accept {
-		if err := s.notify(ctx, assignment.AssignedByUserID, workItemID, "assignment_accepted", item.ReferenceCode+" was accepted by the assignee"); err != nil {
-			return Assignment{}, err
-		}
 	}
 
 	return updated, nil
