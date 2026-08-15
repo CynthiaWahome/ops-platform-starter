@@ -1,132 +1,125 @@
-# ops-platform-starter
+# Work Order Management System
 
-[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Project Board](https://img.shields.io/badge/GitHub_Project-Active-6e40c9?logo=github&logoColor=white)](https://github.com/users/CynthiaWahome/projects/7)
-[![Issues](https://img.shields.io/github/issues/CynthiaWahome/ops-platform-starter)](https://github.com/CynthiaWahome/ops-platform-starter/issues)
+![-Go-](https://img.shields.io/badge/-Go-00ADD8?logo=go&logoColor=white&style=for-the-badge)
+![-PostgreSQL-](https://img.shields.io/badge/-PostgreSQL-336791?logo=postgresql&logoColor=white&style=for-the-badge)
+![-JWT-](https://img.shields.io/badge/-JWT-000000?logo=jsonwebtokens&logoColor=white&style=for-the-badge)
+![-Docker-](https://img.shields.io/badge/-Docker-2496ED?logo=docker&logoColor=white&style=for-the-badge)
+[![-CI-](https://img.shields.io/github/actions/workflow/status/CynthiaWahome/ops-platform-starter/ci.yml?branch=dev&style=for-the-badge&label=CI)](https://github.com/CynthiaWahome/ops-platform-starter/actions)
+[![-MIT_License-](https://img.shields.io/badge/-MIT_License-yellow?style=for-the-badge)](LICENSE)
 
-Reusable backend for role-based operations software, built in Go. REST/JSON — bring your own frontend. (Reference frontend: [ops-platform-starter-frontend](https://github.com/CynthiaWahome/ops-platform-starter-frontend), private.)
+**The backend for a work order management system — create, assign, track, and verify work, with real role-based access control and a real status-transition engine underneath.**
 
-> **Note:** this README covers the current state honestly, but it's a working document — a full rewrite is planned as the last task in this project (see `OPS_PLATFORM_STARTER_BUILD_TICKETS.md`, OPS-049), once the repo's final shape is settled.
+Not a scheduling/routing/billing suite (that's field service management, a bigger, different category) — the core work order lifecycle, done properly, with nothing bolted on. Go, REST/JSON, bring your own frontend.
 
-## Overview
+## Table of Contents
 
-This repository exists to capture the recurring technical core behind projects such as:
+- [Why this exists](#why-this-exists)
+- [Who this is for](#who-this-is-for)
+- [What it does](#what-it-does)
+- [Roles](#roles)
+- [Tech stack](#tech-stack)
+- [Getting started](#getting-started)
+- [Repository structure](#repository-structure)
+- [Contributing](#contributing)
+- [License](#license)
 
-- service dispatch systems
-- field task tracking tools
-- assignment and verification workflows
-- provider or worker operations dashboards
+## Why this exists
 
-The intent is not to build a giant generic SaaS.
+Most small and mid-sized operations businesses need a **work order management system** — something to create work, assign it, track it, and get it signed off — and end up forced into a bad tradeoff: build a bespoke internal tool from scratch, or adopt something the size of SAP to get one workflow they actually need.
 
-The intent is to build a strong internal starter that can be adapted quickly to multiple client or internal operations products.
-
-## What this starter is meant to solve
-
-Most operations products repeat the same backbone:
+That work order lifecycle repeats across almost every ops business:
 
 ```text
-work item created
+work order created
 -> assigned to a worker/provider
--> assignee updates progress
--> evidence is uploaded
--> internal reviewer verifies or flags
--> work item closes
+-> assignee updates progress and uploads evidence
+-> internal reviewer verifies or flags it
+-> work order closes
 ```
 
-This starter is being shaped around that workflow.
+This is that lifecycle, built once, built properly, and reusable — not a finance module, not an HR suite, not a CRM bolted on for good measure. Those are legitimately separate systems. Bundling them is exactly how work order software ends up bloated and expensive for a business that only ever needed the one core loop.
 
-## Initial product goals
+**Work order management, not field service management** — worth being precise about the difference. Field service management (FSM) is the bigger category: scheduling, route optimization, technician GPS tracking, billing, customer communication. This doesn't do any of that. It's specifically the work order lifecycle — create, assign, track, verify, close — done well, with real access control underneath. If a project needs the full FSM suite, this isn't it. If it needs this one core piece, done properly, it is.
 
-The first reusable implementation target is a shared core for:
+## Who this is for
 
-- authentication
-- roles and permissions
-- work item lifecycle
-- assignment and reassignment
-- status tracking
-- evidence uploads
-- verification flows
-- reusable dashboard shells
+- Small service dispatch companies — home services, repairs, field visits
+- Field task or verification-heavy operations — construction site inspections, delivery confirmation, compliance checks
+- Internal ops teams that need real work-assignment and sign-off without buying an enterprise platform to get it
+- Teams building this exact pattern who don't want to rebuild auth, roles, and a status engine from zero
+
+## What it does
+
+- **Full work order lifecycle** — created → assigned → accepted/declined → in progress → submitted for review → verified/flagged → completed, enforced by a real status-transition state machine, not a free-text field
+- **Role-scoped visibility and permissions**, enforced server-side (see [Roles](#roles))
+- **Teams** — assignees belong to exactly one team; supervisors run their own team's day-to-day work without every action routing through a single admin account
+- **Evidence upload and verification** — attachments tied to a work order, required before it can move to review
+- **Assignment and status audit trails** — every reassignment and every status change is a permanent, queryable record
+- **In-app notifications** for the events people actually wait on
+- **Real persistence, optional** — every store has a Postgres implementation *and* an in-memory one. Run with zero setup, or set `DATABASE_URL` for a real, restart-surviving database
+
+## Roles
+
+Four roles, each a genuinely different view over the same data:
+
+| Role | Can see | Can do |
+| --- | --- | --- |
+| **Admin** | Everything, every team | Everything, everywhere — the permanent fallback |
+| **Supervisor** | Their own team's work | Create, assign, reassign, verify, flag, and complete work — scoped to their team |
+| **Assignee / worker** | Only their own assigned work | Accept, decline, work it, submit evidence |
+| **Requester** | Only what they created | Create a request, track its status — nothing else |
 
 ## Tech stack
 
-- Go, standard `net/http` (no framework — deliberate, see `notes/`)
-- PostgreSQL, optional — every store also has an in-memory implementation, which is the zero-setup default
-- Frontend: none in this repo, by design. Plain REST/JSON, so any language/framework can consume it. See [ops-platform-starter-frontend](https://github.com/CynthiaWahome/ops-platform-starter-frontend) for a reference Next.js implementation.
-
-## Repository structure
-
-```text
-ops-platform-starter/
-├── cmd/api/         # entrypoint
-├── internal/        # config, http, workitems, teams, notifications, attachments, db
-└── docker-compose.yml
-```
-
-## Current status
-
-- Auth (JWT, 4 bootstrap roles: admin/supervisor/assignee/requester), full work item lifecycle (create → assign → accept/decline → in progress → submitted for review → verify/flag → completed), teams with scoped supervisor authority, notifications, attachments, and real Postgres persistence (optional, in-memory by default) are all built and tested.
-- No frontend in this repo (see above) — that's the immediate next phase, tracked in the separate frontend repo.
-
-## Planning and backlog
-
-The implementation backlog is already defined in GitHub:
-
-- Project board: [`Ops Platform Starter`](https://github.com/users/CynthiaWahome/projects/7)
-- Issues: [`OPS-001` to `OPS-052`](https://github.com/CynthiaWahome/ops-platform-starter/issues)
-
-The issues are grouped into these milestones:
-
-1. `M0 - Design Lock`
-2. `M1 - Skeleton and Foundations`
-3. `M2 - Work Item and Assignment Core`
-4. `M3 - Evidence and Verification Loop`
-5. `M4 - Hardening`
-6. `M5 - Mapping and Adoption`
+- **Go**, standard library `net/http` — no framework. Minimal dependency surface, predictable request handling, nothing hidden between the code and the wire.
+- **PostgreSQL**, optional. Every store also has an in-memory implementation, which is the zero-setup default.
+- **JWT** authentication, bcrypt password hashing.
+- **REST/JSON only** — no frontend shipped in this repo. Any language or framework can consume the API directly.
 
 ## Getting started
 
 ```bash
+git clone git@github.com:CynthiaWahome/ops-platform-starter.git
+cd ops-platform-starter
+cp .env.example .env
 go mod tidy
 go run ./cmd/api
 ```
 
-By default this runs entirely in memory — no database required, data resets
-every restart. That's deliberate: every test, and every first-time `go run`,
-should work with zero setup.
+Runs entirely in memory by default — no database required, data resets on restart.
 
-To run against real Postgres instead (OPS-048):
+To run against real Postgres instead:
 
 ```bash
 docker compose up -d
 DATABASE_URL="postgres://postgres:postgres@localhost:5432/ops_platform?sslmode=disable" go run ./cmd/api
 ```
 
-Setting `DATABASE_URL` is what opts a run into real, restart-surviving
-persistence — the schema is migrated automatically on startup (see
-`internal/db`). See `.env.example` for every other configurable value
-(bootstrap users, JWT secret, etc.).
+Setting `DATABASE_URL` is what opts a run into real, restart-surviving persistence — the schema migrates itself on startup. `.env.example` documents every other configurable value (bootstrap users for each of the four roles, JWT secret, etc.).
 
-## Development approach
-
-Built in thin vertical slices rather than broad abstract layers — each ticket is a real, tested, manually-verified feature, not a stub. The core workflow loop:
+## Repository structure
 
 ```text
-work item created
--> assigned to a worker/provider (by admin or their team's supervisor)
--> assignee accepts, works it, uploads evidence
--> admin or the team's supervisor verifies or flags it
--> work item closes
+ops-platform-starter/
+├── cmd/api/           # entrypoint
+├── internal/
+│   ├── auth/          # JWT, roles, bootstrap users
+│   ├── workitems/      # the core lifecycle + state machine
+│   ├── teams/          # team membership and supervision scoping
+│   ├── notifications/
+│   ├── attachments/    # evidence upload
+│   ├── db/              # migrations, Postgres wiring, transactions
+│   └── http/            # handlers, router, middleware
+└── docker-compose.yml   # local Postgres, one command
 ```
 
-## Next steps
+## Contributing
 
-- Frontend (see [ops-platform-starter-frontend](https://github.com/CynthiaWahome/ops-platform-starter-frontend))
-- `requester` role signup flow (self-service account creation)
-- README rewrite as the last task in this project (OPS-049)
+1. Fork the repo and create a branch off `dev` (`feat/your-feature`, `fix/your-fix`).
+2. Write tests for anything you change — CI runs the full suite (in-memory and against a real Postgres service container) on every PR and fails closed.
+3. Commit using [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, `docs:`, etc.).
+4. Open a PR against `dev` using the pull request template — link the issue it closes, describe how it was tested.
 
-## Notes
+## License
 
-Planning docs exist locally during active architecture work and are not necessarily intended to be pushed with every scaffold iteration.
+[MIT](LICENSE) — free to use, fork, and adapt for your own operations product.
