@@ -110,7 +110,13 @@ func (h WorkItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.Update(r.Context(), r.PathValue("id"), input)
+	principal, ok := middleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	item, err := h.service.Update(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidPriority):

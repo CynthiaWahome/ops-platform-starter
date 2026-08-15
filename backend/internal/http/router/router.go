@@ -88,7 +88,7 @@ func New(cfg config.Config) (http.Handler, error) {
 		"PATCH /workitems/{id}",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Update), auth.RoleAdmin),
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Update), auth.RoleAdmin, auth.RoleSupervisor),
 		),
 	)
 	mux.Handle(

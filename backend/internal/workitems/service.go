@@ -198,7 +198,19 @@ func (s Service) GetByID(ctx context.Context, id string, callerUserID string, ca
 	return item, nil
 }
 
-func (s Service) Update(ctx context.Context, id string, input UpdateInput) (WorkItem, error) {
+// Update edits a work item's editable fields, scoped for OPS-046: admin can
+// edit anything, a supervisor can only edit work items they may act on via
+// supervisorMayActOn (their own team's, or their own not-yet-assigned
+// creation), and no one else may edit at all — per the permission matrix,
+// "Edit unassigned work item" is Admin: Yes, Supervisor: own team's only,
+// Assignee: No. This deliberately does not reuse mayView: mayView also
+// grants an assignee read access to their own assigned item, which is
+// correct for viewing but wrong for editing — Update has no assignee path
+// at all. Before OPS-046 this had no caller/ownership check whatsoever —
+// any admin-gated caller could edit any work item — which happened to be
+// harmless while the route was admin-only, but became a real gap the
+// moment the route needed to open up to supervisor as well.
+func (s Service) Update(ctx context.Context, id string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool, input UpdateInput) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
@@ -206,6 +218,21 @@ func (s Service) Update(ctx context.Context, id string, input UpdateInput) (Work
 	item, err := s.store.GetByID(ctx, id)
 	if err != nil {
 		return WorkItem{}, err
+	}
+
+	switch {
+	case callerIsAdmin:
+		// unrestricted
+	case callerIsSupervisor:
+		allowed, err := s.supervisorMayActOn(ctx, callerUserID, item)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		if !allowed {
+			return WorkItem{}, ErrNotFound
+		}
+	default:
+		return WorkItem{}, ErrNotFound
 	}
 
 	if input.Title != nil {
