@@ -3,6 +3,7 @@ package workitems
 import (
 	"context"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,13 +20,13 @@ func NewPostgresStatusHistoryStore(pool *pgxpool.Pool) *PostgresStatusHistorySto
 }
 
 func (s *PostgresStatusHistoryStore) Create(ctx context.Context, entry StatusHistory) (StatusHistory, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('status_history_seq') AS n)
 		INSERT INTO status_history (
 			id, work_item_id, from_status, to_status, changed_by_user_id,
 			reason, created_at
 		)
-		SELECT 'statushistory-' || lpad(n::text, 4, '0'), $1, $2, $3, $4, $5, $6
+		SELECT 'statushistory-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6
 		FROM seq
 		RETURNING id, work_item_id, from_status, to_status, changed_by_user_id,
 			reason, created_at
@@ -38,7 +39,7 @@ func (s *PostgresStatusHistoryStore) Create(ctx context.Context, entry StatusHis
 }
 
 func (s *PostgresStatusHistoryStore) ListByWorkItemID(ctx context.Context, workItemID string) ([]StatusHistory, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `
 		SELECT id, work_item_id, from_status, to_status, changed_by_user_id,
 			reason, created_at
 		FROM status_history

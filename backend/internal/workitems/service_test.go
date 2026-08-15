@@ -13,7 +13,7 @@ import (
 func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 17, 30, 0, 0, time.UTC)
 	})
 
@@ -42,7 +42,7 @@ func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	_, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -57,7 +57,7 @@ func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 func TestServiceUpdateChangesEditableFields(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 18, 0, 0, 0, time.UTC)
 	})
 
@@ -93,7 +93,7 @@ func TestServiceUpdateChangesEditableFields(t *testing.T) {
 func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil).WithClock(func() time.Time {
 		return time.Date(2026, time.August, 5, 9, 0, 0, 0, time.UTC)
 	})
 
@@ -151,7 +151,7 @@ func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -173,7 +173,7 @@ func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil).WithClock(func() time.Time {
 		return time.Date(2026, time.August, 5, 10, 0, 0, 0, time.UTC)
 	})
 
@@ -244,7 +244,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 func TestServiceAssignWorkItemRejectsSecondAssignment(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -273,7 +273,7 @@ func TestServiceAssignWorkItemRejectsSecondAssignment(t *testing.T) {
 func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -293,7 +293,7 @@ func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
 func TestServiceRespondToAssignmentAccept(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil).WithClock(func() time.Time {
 		return time.Date(2026, time.August, 6, 9, 0, 0, 0, time.UTC)
 	})
 
@@ -351,7 +351,7 @@ func TestServiceRespondToAssignmentAccept(t *testing.T) {
 func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -395,7 +395,7 @@ func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T)
 func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -466,7 +466,7 @@ func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 func TestServiceRespondToAssignmentRejectsWrongUser(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -493,7 +493,7 @@ func TestServiceRespondToAssignmentRejectsWrongUser(t *testing.T) {
 func TestServiceRespondToAssignmentRejectsAlreadyRespondedTo(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -525,7 +525,7 @@ func TestServiceRespondToAssignmentRejectsAlreadyRespondedTo(t *testing.T) {
 func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	itemA, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -575,7 +575,7 @@ func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
 func TestServiceGetByIDHidesUnownedWorkItemFromAssignee(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -612,7 +612,7 @@ func TestServiceGetByIDHidesUnownedWorkItemFromAssignee(t *testing.T) {
 func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -670,7 +670,7 @@ func TestServiceNotificationsFireForEventHookedTransitionsOnly(t *testing.T) {
 	t.Parallel()
 
 	notificationService := notifications.NewService(notifications.NewMemoryStore())
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService, nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService, nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -750,7 +750,7 @@ func TestServiceNotificationsDoNotFireOnDecline(t *testing.T) {
 	t.Parallel()
 
 	notificationService := notifications.NewService(notifications.NewMemoryStore())
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService, nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService, nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -785,7 +785,7 @@ func TestServiceNotificationsDoNotFireOnDecline(t *testing.T) {
 func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -846,7 +846,7 @@ func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) 
 func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -878,7 +878,7 @@ func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T)
 func TestServiceListStatusHistoryScopesToOwnWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -906,7 +906,7 @@ func TestServiceListStatusHistoryScopesToOwnWorkItem(t *testing.T) {
 func TestServiceGetAssignmentScopesToOwnWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -940,7 +940,7 @@ func newSupervisorTestService(t *testing.T) (Service, teams.Service) {
 	t.Helper()
 
 	teamSvc := teams.NewService(teams.NewMemoryStore(), teams.NewMemoryMembershipStore(), teams.NewMemorySupervisionStore())
-	workSvc := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, teamSvc)
+	workSvc := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, teamSvc, nil)
 
 	return workSvc, teamSvc
 }
@@ -1238,7 +1238,7 @@ func TestChangeStatusToFlaggedRequiresFeedbackRegardlessOfEntryPoint(t *testing.
 	t.Parallel()
 
 	ctx := context.Background()
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil, nil)
 
 	item, err := service.Create(ctx, "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,12 +22,12 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 }
 
 func (s *PostgresStore) Create(ctx context.Context, notification Notification) (Notification, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('notifications_seq') AS n)
 		INSERT INTO notifications (
 			id, recipient_user_id, work_item_id, kind, message, read_at, created_at
 		)
-		SELECT 'notification-' || lpad(n::text, 4, '0'), $1, $2, $3, $4, $5, $6
+		SELECT 'notification-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6
 		FROM seq
 		RETURNING id, recipient_user_id, work_item_id, kind, message, read_at, created_at
 	`,
@@ -38,7 +39,7 @@ func (s *PostgresStore) Create(ctx context.Context, notification Notification) (
 }
 
 func (s *PostgresStore) GetByID(ctx context.Context, id string) (Notification, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		SELECT id, recipient_user_id, work_item_id, kind, message, read_at, created_at
 		FROM notifications
 		WHERE id = $1
@@ -53,7 +54,7 @@ func (s *PostgresStore) GetByID(ctx context.Context, id string) (Notification, e
 }
 
 func (s *PostgresStore) Update(ctx context.Context, notification Notification) (Notification, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		UPDATE notifications
 		SET read_at = $2
 		WHERE id = $1
@@ -77,9 +78,17 @@ func (s *PostgresStore) ListByRecipientUserID(ctx context.Context, recipientUser
 	if onlyUnread {
 		sql += ` AND read_at IS NULL`
 	}
-	sql += ` ORDER BY created_at DESC`
+	// Oldest first, matching MemoryStore.ListByRecipientUserID exactly —
+	// a review on PR #57 caught this returning newest-first here while
+	// the in-memory store returns oldest-first, which would silently
+	// reverse a caller's notification list depending on which Store the
+	// service happened to be built with. workitems' own notification
+	// tests (TestServiceNotificationsFireForEventHookedTransitionsOnly)
+	// already assert this specific oldest-first order, so that's the
+	// one both stores need to agree on.
+	sql += ` ORDER BY created_at ASC`
 
-	rows, err := s.pool.Query(ctx, sql, recipientUserID)
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, sql, recipientUserID)
 	if err != nil {
 		return nil, fmt.Errorf("notifications: list: %w", err)
 	}

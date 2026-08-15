@@ -40,6 +40,7 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		notificationStore      notifications.Store
 		attachmentMetaStore    attachments.Store
 		pool                   *pgxpool.Pool
+		txRunner               workitems.TxRunner
 	)
 
 	// cfg.DatabaseURL empty is the default, zero-setup path every test
@@ -77,6 +78,10 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		supervisionStore = teams.NewPostgresSupervisionStore(pool)
 		notificationStore = notifications.NewPostgresStore(pool)
 		attachmentMetaStore = attachments.NewPostgresStore(pool)
+		// txRunner stays nil in the in-memory branch above — see
+		// workitems.TxRunner's doc comment for why that's correct, not
+		// just unimplemented.
+		txRunner = db.PoolTxRunner{Pool: pool}
 	}
 
 	// Built before workItemService and passed in as its NotificationSink —
@@ -89,7 +94,7 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 	// workItemService's TeamAuthority, and kept as its own variable because
 	// the team handler below needs the same instance.
 	teamService := teams.NewService(teamStore, membershipStore, supervisionStore)
-	workItemService := workitems.NewService(workItemStore, statusHistoryStore, assignmentStore, assignmentHistoryStore, notificationService, teamService)
+	workItemService := workitems.NewService(workItemStore, statusHistoryStore, assignmentStore, assignmentHistoryStore, notificationService, teamService, txRunner)
 
 	attachmentDiskStorage, err := attachments.NewLocalDiskStorage(cfg.AttachmentUploadDir)
 	if err != nil {

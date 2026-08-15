@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,10 +21,10 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 }
 
 func (s *PostgresStore) Create(ctx context.Context, team Team) (Team, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('teams_seq') AS n)
 		INSERT INTO teams (id, name, created_at)
-		SELECT 'team-' || lpad(n::text, 4, '0'), $1, $2
+		SELECT 'team-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2
 		FROM seq
 		RETURNING id, name, created_at
 	`, team.Name, team.CreatedAt)
@@ -32,7 +33,7 @@ func (s *PostgresStore) Create(ctx context.Context, team Team) (Team, error) {
 }
 
 func (s *PostgresStore) GetByID(ctx context.Context, id string) (Team, error) {
-	row := s.pool.QueryRow(ctx, `SELECT id, name, created_at FROM teams WHERE id = $1`, id)
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `SELECT id, name, created_at FROM teams WHERE id = $1`, id)
 
 	team, err := scanTeam(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -43,7 +44,7 @@ func (s *PostgresStore) GetByID(ctx context.Context, id string) (Team, error) {
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Team, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, name, created_at FROM teams ORDER BY created_at ASC`)
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `SELECT id, name, created_at FROM teams ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("teams: list: %w", err)
 	}

@@ -1,0 +1,12 @@
+version: 2
+
+# GitGuardian flagged POSTGRES_PASSWORD in backend/docker-compose.yml as a
+# hardcoded secret. It isn't one: it's a throwaway default for a disposable
+# local dev container (documented in README.md and backend/.env.example),
+# never used against any real or deployed database. Ignored explicitly
+# here, with the reasoning on record, rather than left as a permanently
+# red, ignorable CI check that trains reviewers to stop reading it.
+secret:
+  ignored-matches:
+    - name: local-only docker-compose Postgres default password
+      match: postgres

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,10 +23,10 @@ func NewPostgresSupervisionStore(pool *pgxpool.Pool) *PostgresSupervisionStore {
 }
 
 func (s *PostgresSupervisionStore) Create(ctx context.Context, supervision Supervision) (Supervision, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('team_supervisions_seq') AS n)
 		INSERT INTO team_supervisions (id, team_id, user_id, added_by_user_id, added_at, removed_at)
-		SELECT 'teamsupervision-' || lpad(n::text, 4, '0'), $1, $2, $3, $4, $5
+		SELECT 'teamsupervision-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5
 		FROM seq
 		RETURNING id, team_id, user_id, added_by_user_id, added_at, removed_at
 	`, supervision.TeamID, supervision.UserID, supervision.AddedByUserID, supervision.AddedAt, supervision.RemovedAt)
@@ -34,7 +35,7 @@ func (s *PostgresSupervisionStore) Create(ctx context.Context, supervision Super
 }
 
 func (s *PostgresSupervisionStore) Update(ctx context.Context, supervision Supervision) (Supervision, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		UPDATE team_supervisions
 		SET removed_at = $2
 		WHERE id = $1
@@ -66,7 +67,7 @@ func (s *PostgresSupervisionStore) ListActiveByUserID(ctx context.Context, userI
 }
 
 func (s *PostgresSupervisionStore) queryActive(ctx context.Context, sql string, arg string) ([]Supervision, error) {
-	rows, err := s.pool.Query(ctx, sql, arg)
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, sql, arg)
 	if err != nil {
 		return nil, fmt.Errorf("teams: list active supervisions: %w", err)
 	}

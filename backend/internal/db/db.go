@@ -68,8 +68,37 @@ type migration struct {
 // migrations are skipped), and never rolls a migration back
 // automatically. Down migrations exist in the same directory for a human
 // to run by hand during development, not for this function to reach for.
+//
+// Everything below runs on one dedicated connection (pool.Acquire, not
+// the pool directly), held for the entire function via a Postgres
+// advisory lock. Without it, two replicas starting at the same moment
+// against a fresh database could both see a given version as unapplied
+// before either has recorded it, and both try to run the same
+// non-idempotent CREATE TABLE/CREATE SEQUENCE statements — one of them
+// fails with a duplicate-object error instead of just waiting its turn.
+// An advisory lock is session-scoped (tied to this one connection, not
+// released until explicitly unlocked or the connection closes), which is
+// exactly why this can't just use the pool: a pooled Exec/QueryRow call
+// could be served by a different underlying connection each time,
+// silently losing the lock between statements. migrationLockKey is an
+// arbitrary fixed number, unique to this application's use of advisory
+// locks — its only requirement is being unlikely to collide with a lock
+// key some other tool on the same database might pick.
+const migrationLockKey = 8_675_309
+
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("db: acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("db: acquire migration lock: %w", err)
+	}
+	defer conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, migrationLockKey)
+
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version     TEXT PRIMARY KEY,
 			applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -85,7 +114,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 
 	for _, m := range migrations {
 		var alreadyApplied bool
-		if err := pool.QueryRow(ctx,
+		if err := conn.QueryRow(ctx,
 			`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`,
 			m.version,
 		).Scan(&alreadyApplied); err != nil {
@@ -96,7 +125,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 
-		tx, err := pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("db: begin migration %s: %w", m.version, err)
 		}

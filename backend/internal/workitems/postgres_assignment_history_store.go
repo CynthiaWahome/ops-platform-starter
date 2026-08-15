@@ -3,6 +3,7 @@ package workitems
 import (
 	"context"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -20,13 +21,13 @@ func NewPostgresAssignmentHistoryStore(pool *pgxpool.Pool) *PostgresAssignmentHi
 }
 
 func (s *PostgresAssignmentHistoryStore) Create(ctx context.Context, entry AssignmentHistory) (AssignmentHistory, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('assignment_history_seq') AS n)
 		INSERT INTO assignment_history (
 			id, work_item_id, action, actor_user_id, assigned_to_user_id,
 			note, created_at
 		)
-		SELECT 'assignmenthistory-' || lpad(n::text, 4, '0'), $1, $2, $3, $4, $5, $6
+		SELECT 'assignmenthistory-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6
 		FROM seq
 		RETURNING id, work_item_id, action, actor_user_id, assigned_to_user_id,
 			note, created_at
@@ -39,7 +40,7 @@ func (s *PostgresAssignmentHistoryStore) Create(ctx context.Context, entry Assig
 }
 
 func (s *PostgresAssignmentHistoryStore) ListByWorkItemID(ctx context.Context, workItemID string) ([]AssignmentHistory, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `
 		SELECT id, work_item_id, action, actor_user_id, assigned_to_user_id,
 			note, created_at
 		FROM assignment_history

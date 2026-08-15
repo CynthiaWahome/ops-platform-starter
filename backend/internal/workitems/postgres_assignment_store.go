@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,13 +25,13 @@ func NewPostgresAssignmentStore(pool *pgxpool.Pool) *PostgresAssignmentStore {
 }
 
 func (s *PostgresAssignmentStore) Create(ctx context.Context, assignment Assignment) (Assignment, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('assignments_seq') AS n)
 		INSERT INTO assignments (
 			id, work_item_id, assigned_by_user_id, assigned_to_user_id,
 			status, assigned_at, responded_at, response_note
 		)
-		SELECT 'assignment-' || lpad(n::text, 4, '0'), $1, $2, $3, $4, $5, $6, $7
+		SELECT 'assignment-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6, $7
 		FROM seq
 		ON CONFLICT (work_item_id) DO UPDATE SET
 			assigned_by_user_id = EXCLUDED.assigned_by_user_id,
@@ -50,7 +51,7 @@ func (s *PostgresAssignmentStore) Create(ctx context.Context, assignment Assignm
 }
 
 func (s *PostgresAssignmentStore) GetByWorkItemID(ctx context.Context, workItemID string) (Assignment, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		SELECT id, work_item_id, assigned_by_user_id, assigned_to_user_id,
 			status, assigned_at, responded_at, response_note
 		FROM assignments
@@ -66,7 +67,7 @@ func (s *PostgresAssignmentStore) GetByWorkItemID(ctx context.Context, workItemI
 }
 
 func (s *PostgresAssignmentStore) Update(ctx context.Context, assignment Assignment) (Assignment, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		UPDATE assignments
 		SET status = $2, responded_at = $3, response_note = $4
 		WHERE work_item_id = $1

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,10 +24,10 @@ func NewPostgresMembershipStore(pool *pgxpool.Pool) *PostgresMembershipStore {
 }
 
 func (s *PostgresMembershipStore) Create(ctx context.Context, membership Membership) (Membership, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('team_memberships_seq') AS n)
 		INSERT INTO team_memberships (id, team_id, user_id, added_by_user_id, added_at, removed_at)
-		SELECT 'teammembership-' || lpad(n::text, 4, '0'), $1, $2, $3, $4, $5
+		SELECT 'teammembership-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5
 		FROM seq
 		RETURNING id, team_id, user_id, added_by_user_id, added_at, removed_at
 	`, membership.TeamID, membership.UserID, membership.AddedByUserID, membership.AddedAt, membership.RemovedAt)
@@ -35,7 +36,7 @@ func (s *PostgresMembershipStore) Create(ctx context.Context, membership Members
 }
 
 func (s *PostgresMembershipStore) Update(ctx context.Context, membership Membership) (Membership, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		UPDATE team_memberships
 		SET removed_at = $2
 		WHERE id = $1
@@ -51,7 +52,7 @@ func (s *PostgresMembershipStore) Update(ctx context.Context, membership Members
 }
 
 func (s *PostgresMembershipStore) GetActiveByUserID(ctx context.Context, userID string) (Membership, bool, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		SELECT id, team_id, user_id, added_by_user_id, added_at, removed_at
 		FROM team_memberships
 		WHERE user_id = $1 AND removed_at IS NULL
@@ -69,7 +70,7 @@ func (s *PostgresMembershipStore) GetActiveByUserID(ctx context.Context, userID 
 }
 
 func (s *PostgresMembershipStore) ListActiveByTeamID(ctx context.Context, teamID string) ([]Membership, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `
 		SELECT id, team_id, user_id, added_by_user_id, added_at, removed_at
 		FROM team_memberships
 		WHERE team_id = $1 AND removed_at IS NULL

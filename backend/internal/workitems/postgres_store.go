@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,7 +30,7 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 // inserts the row and returns it with those generated fields filled in —
 // the same shape MemoryStore.Create already returns.
 func (s *PostgresStore) Create(ctx context.Context, item WorkItem) (WorkItem, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('work_items_seq') AS n)
 		INSERT INTO work_items (
 			id, reference_code, title, description, status, priority,
@@ -37,8 +38,8 @@ func (s *PostgresStore) Create(ctx context.Context, item WorkItem) (WorkItem, er
 			created_at, updated_at
 		)
 		SELECT
-			'workitem-' || lpad(n::text, 4, '0'),
-			'WI-' || lpad(n::text, 4, '0'),
+			'workitem-' || lpad(n::text, greatest(length(n::text), 4), '0'),
+			'WI-' || lpad(n::text, greatest(length(n::text), 4), '0'),
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		FROM seq
 		RETURNING id, reference_code, title, description, status, priority,
@@ -54,7 +55,7 @@ func (s *PostgresStore) Create(ctx context.Context, item WorkItem) (WorkItem, er
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]WorkItem, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `
 		SELECT id, reference_code, title, description, status, priority,
 			created_by_user_id, assigned_to_user_id, location_text, due_at,
 			created_at, updated_at
@@ -73,7 +74,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]WorkItem, error) {
 // on this method already predicted a real database-backed Store would
 // use, instead of the full scan + filter it has to do in-process.
 func (s *PostgresStore) ListByAssignedToUserID(ctx context.Context, userID string) ([]WorkItem, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `
 		SELECT id, reference_code, title, description, status, priority,
 			created_by_user_id, assigned_to_user_id, location_text, due_at,
 			created_at, updated_at
@@ -90,7 +91,7 @@ func (s *PostgresStore) ListByAssignedToUserID(ctx context.Context, userID strin
 }
 
 func (s *PostgresStore) GetByID(ctx context.Context, id string) (WorkItem, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		SELECT id, reference_code, title, description, status, priority,
 			created_by_user_id, assigned_to_user_id, location_text, due_at,
 			created_at, updated_at
@@ -102,7 +103,7 @@ func (s *PostgresStore) GetByID(ctx context.Context, id string) (WorkItem, error
 }
 
 func (s *PostgresStore) Update(ctx context.Context, item WorkItem) (WorkItem, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		UPDATE work_items
 		SET title = $2, description = $3, status = $4, priority = $5,
 			assigned_to_user_id = $6, location_text = $7, due_at = $8,

@@ -2,11 +2,13 @@ package attachments
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
+	"time"
 )
 
 // Storage saves raw file bytes somewhere and hands back a locator (a path
@@ -25,9 +27,7 @@ type Storage interface {
 // (see OPS-030's issue body) is that evidence upload has to actually work
 // end to end, even before a cloud-backed Storage exists.
 type LocalDiskStorage struct {
-	mu      sync.Mutex
 	baseDir string
-	seq     int
 }
 
 func NewLocalDiskStorage(baseDir string) (*LocalDiskStorage, error) {
@@ -40,13 +40,26 @@ func NewLocalDiskStorage(baseDir string) (*LocalDiskStorage, error) {
 
 // Save streams content onto disk with io.Copy rather than reading it into
 // memory first, so an upload's size is bounded by disk space, not RAM.
+//
+// The stored filename used to be a simple in-process counter
+// (0001-photo.jpg, 0002-photo.jpg, ...). That was fine while attachment
+// metadata was in-memory too — everything reset together on restart. Once
+// OPS-048 made metadata durable, it stopped being safe: the counter still
+// resets to zero on every restart, so a later upload could reuse an
+// earlier one's exact path, and os.Create below would silently truncate
+// the old file while its Postgres row kept pointing at that now-clobbered
+// path. A timestamp (nanosecond-resolution, so nothing this process
+// itself creates back-to-back can collide) plus a short random suffix
+// (guards against two uploads landing in the same nanosecond, or a clock
+// that doesn't advance between calls on some platforms) needs no
+// persisted state at all, so there's nothing left to reset.
 func (s *LocalDiskStorage) Save(_ context.Context, filename string, content io.Reader) (string, int64, error) {
-	s.mu.Lock()
-	s.seq++
-	seq := s.seq
-	s.mu.Unlock()
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", 0, fmt.Errorf("attachments: generate unique filename: %w", err)
+	}
 
-	storedName := fmt.Sprintf("%04d-%s", seq, filepath.Base(filename))
+	storedName := fmt.Sprintf("%d-%s-%s", time.Now().UnixNano(), hex.EncodeToString(suffix), filepath.Base(filename))
 	fullPath := filepath.Join(s.baseDir, storedName)
 
 	destination, err := os.Create(fullPath)

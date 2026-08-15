@@ -3,6 +3,7 @@ package attachments
 import (
 	"context"
 	"fmt"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,13 +20,13 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 }
 
 func (s *PostgresStore) Create(ctx context.Context, attachment Attachment) (Attachment, error) {
-	row := s.pool.QueryRow(ctx, `
+	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('attachments_seq') AS n)
 		INSERT INTO attachments (
 			id, work_item_id, uploaded_by_user_id, storage_url, mime_type,
 			file_size, kind, created_at
 		)
-		SELECT 'attachment-' || lpad(n::text, 4, '0'), $1, $2, $3, $4, $5, $6, $7
+		SELECT 'attachment-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6, $7
 		FROM seq
 		RETURNING id, work_item_id, uploaded_by_user_id, storage_url, mime_type,
 			file_size, kind, created_at
@@ -38,7 +39,7 @@ func (s *PostgresStore) Create(ctx context.Context, attachment Attachment) (Atta
 }
 
 func (s *PostgresStore) ListByWorkItemID(ctx context.Context, workItemID string) ([]Attachment, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := db.Querier(ctx, s.pool).Query(ctx, `
 		SELECT id, work_item_id, uploaded_by_user_id, storage_url, mime_type,
 			file_size, kind, created_at
 		FROM attachments
