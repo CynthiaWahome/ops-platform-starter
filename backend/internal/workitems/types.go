@@ -16,6 +16,7 @@ var (
 	ErrAssignmentNotOwned   = errors.New("assignment does not belong to this user")
 	ErrAssignmentNotPending = errors.New("assignment has already been responded to")
 	ErrFeedbackRequired     = errors.New("feedback note is required when flagging a work item")
+	ErrAlreadyAssigned      = errors.New("work item is already assigned and can no longer be edited by a supervisor")
 )
 
 type Status string
