@@ -1,4 +1,4 @@
-# ops-platform-starter
+# Work Order Management System
 
 ![-Go-](https://img.shields.io/badge/-Go-00ADD8?logo=go&logoColor=white&style=for-the-badge)
 ![-PostgreSQL-](https://img.shields.io/badge/-PostgreSQL-336791?logo=postgresql&logoColor=white&style=for-the-badge)
