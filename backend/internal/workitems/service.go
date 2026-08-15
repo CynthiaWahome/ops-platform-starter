@@ -15,21 +15,36 @@ type TeamAuthority interface {
 	SupervisedAssigneeUserIDs(ctx context.Context, supervisorUserID string) ([]string, error)
 }
 
+// NotificationSink is the seam OPS-041 uses to raise a notification as a
+// side effect of a workflow event, without workitems depending on the
+// notifications package concretely. Defined here, where it's consumed,
+// rather than in the notifications package, where it's implemented —
+// notifications.Service satisfies this by having a matching Notify
+// method, with no import or explicit "implements" declaration needed on
+// either side. kind is a plain string on purpose: workitems never needs
+// to know notifications.Kind exists, only that it's calling Notify with
+// one of a few string literals.
+type NotificationSink interface {
+	Notify(ctx context.Context, recipientUserID, workItemID, kind, message string) error
+}
+
 type Service struct {
 	store                  Store
 	historyStore           StatusHistoryStore
 	assignmentStore        AssignmentStore
 	assignmentHistoryStore AssignmentHistoryStore
+	notifier               NotificationSink
 	teamAuthority          TeamAuthority
 	now                    func() time.Time
 }
 
-func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore, assignmentHistoryStore AssignmentHistoryStore, teamAuthority TeamAuthority) Service {
+func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore, assignmentHistoryStore AssignmentHistoryStore, notifier NotificationSink, teamAuthority TeamAuthority) Service {
 	return Service{
 		store:                  store,
 		historyStore:           historyStore,
 		assignmentStore:        assignmentStore,
 		assignmentHistoryStore: assignmentHistoryStore,
+		notifier:               notifier,
 		teamAuthority:          teamAuthority,
 		now:                    time.Now,
 	}
@@ -311,6 +326,12 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 		return WorkItem{}, err
 	}
 
+	if recipientUserID, kind, message, ok := notificationForStatusChange(updated); ok {
+		if err := s.notify(ctx, recipientUserID, id, kind, message); err != nil {
+			return WorkItem{}, err
+		}
+	}
+
 	return updated, nil
 }
 
@@ -333,6 +354,36 @@ func (s Service) supervisorMayActOn(ctx context.Context, actorUserID string, ite
 
 	return s.teamAuthority.IsActiveSupervisorOf(ctx, actorUserID, *item.AssignedToUserID)
 }
+
+// notificationForStatusChange maps the four Event-Hooks-listed status
+// destinations to who should hear about it. Every other destination
+// (accepted, in_progress, created, cancelled) returns ok=false — starting
+// work isn't a checkpoint anyone is waiting on the way these four are.
+// Takes the already-updated WorkItem rather than a bare Status so the
+// recipient (creator or assignee, depending on which event) is read off
+// real data instead of being threaded through as extra parameters.
+func notificationForStatusChange(item WorkItem) (recipientUserID, kind, message string, ok bool) {
+	switch item.Status {
+	case StatusSubmittedForReview:
+		return item.CreatedByUserID, "evidence_submitted", item.ReferenceCode + " was submitted for review", true
+	case StatusFlagged:
+		if item.AssignedToUserID == nil {
+			return "", "", "", false
+		}
+		return *item.AssignedToUserID, "work_flagged", item.ReferenceCode + " was flagged and needs rework", true
+	case StatusVerified:
+		if item.AssignedToUserID == nil {
+			return "", "", "", false
+		}
+		return *item.AssignedToUserID, "work_verified", item.ReferenceCode + " was verified", true
+	case StatusCompleted:
+		if item.AssignedToUserID == nil {
+			return "", "", "", false
+		}
+		return *item.AssignedToUserID, "work_completed", item.ReferenceCode + " was marked completed", true
+	default:
+		return "", "", "", false
+	}}
 
 // recordStatusChange writes one StatusHistory entry. It is the single place
 // that turns a status move into a history row, so ChangeStatus and
@@ -400,6 +451,19 @@ func (s Service) mayView(ctx context.Context, item WorkItem, callerUserID string
 	}
 
 	return item.AssignedToUserID != nil && *item.AssignedToUserID == callerUserID, nil
+}
+
+// notify is a small nil-safe wrapper around s.notifier.Notify — every
+// call site already has a workItemID and a human-readable message ready,
+// this just guards against notifier being unset (a caller that
+// deliberately omits notifications, e.g. a test that doesn't care about
+// them) so nothing panics on a nil interface.
+func (s Service) notify(ctx context.Context, recipientUserID, workItemID, kind, message string) error {
+	if s.notifier == nil {
+		return nil
+	}
+
+	return s.notifier.Notify(ctx, recipientUserID, workItemID, kind, message)
 }
 
 // ListStatusHistory returns every status change recorded for a work item,
@@ -523,6 +587,10 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 		return Assignment{}, err
 	}
 
+	if err := s.notify(ctx, assignedToUserID, workItemID, "assignment_created", item.ReferenceCode+" was assigned to you"); err != nil {
+		return Assignment{}, err
+	}
+
 	return assignment, nil
 }
 
@@ -635,6 +703,16 @@ func (s Service) RespondToAssignment(ctx context.Context, workItemID string, res
 
 	if err := s.recordAssignmentEvent(ctx, workItemID, assignmentStatus, respondingUserID, assignment.AssignedToUserID, input.Note, now); err != nil {
 		return Assignment{}, err
+	}
+
+	// Declining isn't in the Event Hooks list — only acceptance is. The
+	// admin who made a doomed assignment finds out by checking, same as
+	// today; nobody's waiting on a decline the way they're waiting on an
+	// accept.
+	if accept {
+		if err := s.notify(ctx, assignment.AssignedByUserID, workItemID, "assignment_accepted", item.ReferenceCode+" was accepted by the assignee"); err != nil {
+			return Assignment{}, err
+		}
 	}
 
 	return updated, nil

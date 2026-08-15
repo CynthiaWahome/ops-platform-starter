@@ -1051,6 +1051,104 @@ func TestAssigneeCannotFlagOwnSubmittedWorkItem(t *testing.T) {
 	}
 }
 
+func TestAssigneeReceivesAndReadsAssignmentNotification(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/notifications", nil)
+	listReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listRec.Code)
+	}
+
+	var list []struct {
+		ID     string  `json:"id"`
+		Kind   string  `json:"kind"`
+		ReadAt *string `json:"readAt,omitempty"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&list); err != nil {
+		t.Fatalf("expected notification list to decode, got error: %v", err)
+	}
+
+	if len(list) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(list))
+	}
+	if list[0].Kind != "assignment_created" {
+		t.Fatalf("expected kind %q, got %q", "assignment_created", list[0].Kind)
+	}
+	if list[0].ReadAt != nil {
+		t.Fatal("expected the notification to be unread")
+	}
+
+	readReq := httptest.NewRequest(http.MethodPost, "/notifications/"+list[0].ID+"/read", nil)
+	readReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	readRec := httptest.NewRecorder()
+	handler.ServeHTTP(readRec, readReq)
+
+	if readRec.Code != http.StatusOK {
+		t.Fatalf("expected mark-as-read status %d, got %d", http.StatusOK, readRec.Code)
+	}
+
+	unreadReq := httptest.NewRequest(http.MethodGet, "/notifications?unread=true", nil)
+	unreadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	unreadRec := httptest.NewRecorder()
+	handler.ServeHTTP(unreadRec, unreadReq)
+
+	var unreadList []struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(unreadRec.Body).Decode(&unreadList); err != nil {
+		t.Fatalf("expected unread notification list to decode, got error: %v", err)
+	}
+
+	if len(unreadList) != 0 {
+		t.Fatalf("expected 0 unread notifications after marking read, got %d", len(unreadList))
+	}
+}
+
+func TestCannotMarkAnotherUsersNotificationAsRead(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	createAndAssignWorkItem(t, handler, adminToken, "user-assignee-001")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/notifications", nil)
+	listReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+
+	var list []struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&list); err != nil {
+		t.Fatalf("expected notification list to decode, got error: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(list))
+	}
+
+	// The admin tries to mark the assignee's notification as read.
+	readReq := httptest.NewRequest(http.MethodPost, "/notifications/"+list[0].ID+"/read", nil)
+	readReq.Header.Set("Authorization", "Bearer "+adminToken)
+	readRec := httptest.NewRecorder()
+	handler.ServeHTTP(readRec, readReq)
+
+	if readRec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, readRec.Code)
+	}
+}
+
 func TestAssignmentHistoryVisibleToOwningAssigneeAndAdmin(t *testing.T) {
 	t.Parallel()
 
