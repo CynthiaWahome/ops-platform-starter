@@ -1373,7 +1373,7 @@ func TestAdminCanEditWorkItemAtAnyStatus(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil, nil)
 
 	item, err := service.Create(ctx, "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -1446,7 +1446,7 @@ func TestAssigneeCannotEditWorkItem(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil, nil)
 
 	item, err := service.Create(ctx, "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
