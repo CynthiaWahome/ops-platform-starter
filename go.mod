@@ -1,4 +1,4 @@
-module github.com/CynthiaWahome/ops-platform-starter/backend
+module github.com/CynthiaWahome/ops-platform-starter
 
 go 1.26.4
 

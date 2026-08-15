@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
 	"golang.org/x/crypto/bcrypt"
 )
 

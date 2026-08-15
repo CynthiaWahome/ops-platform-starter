@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
 )
 
 type UserStore interface {

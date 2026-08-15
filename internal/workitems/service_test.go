@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/notifications"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/teams"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/notifications"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/teams"
 )
 
 func TestServiceCreateGeneratesWorkItem(t *testing.T) {

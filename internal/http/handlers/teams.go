@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/teams"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/http/middleware"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/teams"
 )
 
 // TeamHandler exposes team structure management — create a team, add or

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
-	httpmiddleware "github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
+	httpmiddleware "github.com/CynthiaWahome/ops-platform-starter/internal/http/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
 

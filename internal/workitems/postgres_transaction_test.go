@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/db"
 )
 
 // failingNotifier always errors — used below to force a failure at the
