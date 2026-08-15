@@ -193,14 +193,14 @@ func New(cfg config.Config) (http.Handler, error) {
 		"POST /workitems/{id}/attachments",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.Upload), auth.RoleAdmin, auth.RoleAssignee),
+			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.Upload), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}/attachments",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.List), auth.RoleAdmin, auth.RoleAssignee),
+			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.List), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
 		),
 	)
 	mux.Handle(

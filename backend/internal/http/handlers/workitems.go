@@ -174,7 +174,8 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput),
 			errors.Is(err, workitems.ErrInvalidStatus),
-			errors.Is(err, workitems.ErrInvalidTransition):
+			errors.Is(err, workitems.ErrInvalidTransition),
+			errors.Is(err, workitems.ErrFeedbackRequired):
 			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
 		case errors.Is(err, workitems.ErrNotFound):
 			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})

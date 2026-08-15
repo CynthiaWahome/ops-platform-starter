@@ -279,6 +279,17 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 		return WorkItem{}, ErrInvalidStatus
 	}
 
+	// Flagging without saying why leaves the assignee with nothing to act
+	// on (see FlagInput's doc comment). The dedicated POST .../flag
+	// handler already enforces this before it ever calls ChangeStatus,
+	// but that only covers callers going through that one route — the
+	// generic PATCH .../status endpoint reaches this same transition with
+	// no such check. Enforcing it here closes it for every entry point
+	// and every caller (admin included), not just the one handler.
+	if input.ToStatus == StatusFlagged && (input.Reason == nil || strings.TrimSpace(*input.Reason) == "") {
+		return WorkItem{}, ErrFeedbackRequired
+	}
+
 	item, err := s.store.GetByID(ctx, id)
 	if err != nil {
 		return WorkItem{}, err
@@ -383,7 +394,8 @@ func notificationForStatusChange(item WorkItem) (recipientUserID, kind, message 
 		return *item.AssignedToUserID, "work_completed", item.ReferenceCode + " was marked completed", true
 	default:
 		return "", "", "", false
-	}}
+	}
+}
 
 // recordStatusChange writes one StatusHistory entry. It is the single place
 // that turns a status move into a history row, so ChangeStatus and
@@ -522,11 +534,16 @@ func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, c
 // a work item that has already been assigned, or moved further along, is
 // rejected by the same IsValidTransition check rather than a new rule.
 //
-// A supervisor caller (OPS-045) may only assign to an assigneeToUserID who
-// is currently on a team they actively supervise — checked via
-// teamAuthority the same way as ChangeStatus, so a supervisor can never
-// hand work to someone outside their team. An admin caller is unrestricted,
-// as before.
+// A supervisor caller (OPS-045) is checked two ways, both of which must
+// pass: supervisorMayActOn confirms they may act on this specific work
+// item at all (it's their own not-yet-assigned creation — an unassigned
+// item has no team to check against yet), and teamAuthority confirms the
+// destination assigneeToUserID is on a team they actively supervise. The
+// first check alone would let a supervisor "adopt" someone else's hidden
+// unassigned item just by knowing its id and pointing it at their own
+// team — supervisorMayActOn closes that: only the item's own creator (or
+// admin) may assign it in the first place. An admin caller is
+// unrestricted, as before.
 func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, assignedByIsSupervisor bool, input AssignInput) (Assignment, error) {
 	assignedToUserID := strings.TrimSpace(input.AssignedToUserID)
 
@@ -540,15 +557,23 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 	}
 
 	if assignedByIsSupervisor {
-		if s.teamAuthority == nil {
-			return Assignment{}, ErrNotFound
-		}
-
-		allowed, err := s.teamAuthority.IsActiveSupervisorOf(ctx, assignedByUserID, assignedToUserID)
+		allowed, err := s.supervisorMayActOn(ctx, assignedByUserID, item)
 		if err != nil {
 			return Assignment{}, err
 		}
 		if !allowed {
+			return Assignment{}, ErrNotFound
+		}
+
+		if s.teamAuthority == nil {
+			return Assignment{}, ErrNotFound
+		}
+
+		destinationAllowed, err := s.teamAuthority.IsActiveSupervisorOf(ctx, assignedByUserID, assignedToUserID)
+		if err != nil {
+			return Assignment{}, err
+		}
+		if !destinationAllowed {
 			return Assignment{}, ErrNotFound
 		}
 	}
