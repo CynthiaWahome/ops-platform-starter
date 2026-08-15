@@ -1,0 +1,26 @@
+# Local Postgres for OPS-048 — one command, zero manual setup:
+#
+#   docker compose up -d
+#
+# Then point the API at it:
+#
+#   DATABASE_URL="postgres://postgres:postgres@localhost:5432/ops_platform?sslmode=disable" go run ./cmd/api
+#
+# Leaving DATABASE_URL unset (the default) skips Postgres entirely and
+# uses the in-memory stores, same as every session before OPS-048 — this
+# file is opt-in, not a requirement to run the backend at all.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ops_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - ops-platform-pgdata:/var/lib/postgresql/data
+
+volumes:
+  ops-platform-pgdata:

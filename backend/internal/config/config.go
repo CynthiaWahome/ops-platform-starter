@@ -21,6 +21,11 @@ type Config struct {
 	BootstrapSupervisorPassword    string
 	BootstrapSupervisorDisplayName string
 	AttachmentUploadDir            string
+	// DatabaseURL is empty by default — an empty string means "no
+	// Postgres configured," and router.New falls back to the in-memory
+	// stores every test and every zero-setup `go run` has always used.
+	// Set DATABASE_URL to opt into real persistence (OPS-048).
+	DatabaseURL string
 }
 
 func Load() Config {
@@ -45,6 +50,7 @@ func Load() Config {
 			"Team Supervisor",
 		),
 		AttachmentUploadDir: getEnv("ATTACHMENT_UPLOAD_DIR", "uploads"),
+		DatabaseURL:         getEnv("DATABASE_URL", ""),
 	}
 }
 
