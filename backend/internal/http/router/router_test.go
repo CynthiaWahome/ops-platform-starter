@@ -1455,6 +1455,71 @@ func TestSupervisorCanRunFullLifecycleThroughRealHTTPHandlers(t *testing.T) {
 	}
 }
 
+// TestRequesterCanCreateAndTrackOwnWorkItemThroughRealHTTPHandlers is
+// OPS-047's router-level coverage — same reasoning as the supervisor
+// version above: prove the role through actual HTTP routes and
+// middleware, not just the service layer directly.
+func TestRequesterCanCreateAndTrackOwnWorkItemThroughRealHTTPHandlers(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	requesterToken := loginAndReturnToken(t, handler, "requester@ops.local", "ChangeMe123!")
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+
+	createBody := bytes.NewBufferString(`{"title":"Fix leaking tap","description":"Kitchen tap won't stop dripping","priority":"low"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+requesterToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var item struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&item); err != nil {
+		t.Fatalf("expected create response to decode, got error: %v", err)
+	}
+
+	// Requester can track their own request.
+	getReq := httptest.NewRequest(http.MethodGet, "/workitems/"+item.ID, nil)
+	getReq.Header.Set("Authorization", "Bearer "+requesterToken)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected get status %d, got %d: %s", http.StatusOK, getRec.Code, getRec.Body.String())
+	}
+
+	// Requester cannot assign work — the route itself isn't even open to
+	// their role, so this is rejected by middleware (403) before it ever
+	// reaches the service.
+	assignReq := httptest.NewRequest(http.MethodPost, "/workitems/"+item.ID+"/assignment", bytes.NewBufferString(`{"assignedToUserId":"user-assignee-001"}`))
+	assignReq.Header.Set("Authorization", "Bearer "+requesterToken)
+	assignReq.Header.Set("Content-Type", "application/json")
+	assignRec := httptest.NewRecorder()
+	handler.ServeHTTP(assignRec, assignReq)
+
+	if assignRec.Code != http.StatusForbidden {
+		t.Fatalf("expected requester assign attempt status %d, got %d: %s", http.StatusForbidden, assignRec.Code, assignRec.Body.String())
+	}
+
+	// Admin can still assign it — requester's existence doesn't restrict
+	// admin's unrestricted reach.
+	adminAssignReq := httptest.NewRequest(http.MethodPost, "/workitems/"+item.ID+"/assignment", bytes.NewBufferString(`{"assignedToUserId":"user-assignee-001"}`))
+	adminAssignReq.Header.Set("Authorization", "Bearer "+adminToken)
+	adminAssignReq.Header.Set("Content-Type", "application/json")
+	adminAssignRec := httptest.NewRecorder()
+	handler.ServeHTTP(adminAssignRec, adminAssignReq)
+
+	if adminAssignRec.Code != http.StatusCreated {
+		t.Fatalf("expected admin assign status %d, got %d: %s", http.StatusCreated, adminAssignRec.Code, adminAssignRec.Body.String())
+	}
+}
+
 // newMultipartUploadBody builds a real multipart/form-data request body
 // with a "file" field and a "kind" field, the same shape a browser or
 // Postman would send. Returns the body plus the Content-Type header value
@@ -1502,6 +1567,9 @@ func newTestRouter(t *testing.T) http.Handler {
 		BootstrapSupervisorIdentifier:  "supervisor@ops.local",
 		BootstrapSupervisorPassword:    "ChangeMe123!",
 		BootstrapSupervisorDisplayName: "Team Supervisor",
+		BootstrapRequesterIdentifier:   "requester@ops.local",
+		BootstrapRequesterPassword:     "ChangeMe123!",
+		BootstrapRequesterDisplayName:  "Requesting Customer",
 		AttachmentUploadDir:            t.TempDir(),
 	})
 	if err != nil {

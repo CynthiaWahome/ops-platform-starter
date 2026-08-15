@@ -125,13 +125,16 @@ func (s Service) Create(ctx context.Context, createdByUserID string, input Creat
 // item. A supervisor (OPS-045) sees work items currently assigned to
 // anyone on a team they actively supervise, plus their own not-yet-assigned
 // work — the same "own team, plus own unassigned drafts" shape
-// supervisorMayActOn uses for actions. A plain caller (assignee) only sees
-// work items currently assigned to them — the "assignee sees own assigned
-// work only" rule from the starter's permission matrix. The workitems
-// package deliberately doesn't import the auth package, so the caller (the
-// HTTP handler, which does know about roles) resolves "is this an admin /
-// supervisor" into plain bools before calling this method.
-func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) ([]WorkItem, error) {
+// supervisorMayActOn uses for actions. A requester (OPS-047) sees only
+// work items they created — they never have anything assigned to them,
+// so ListByCreatedByUserID rather than ListByAssignedToUserID is the
+// right scope. A plain caller (assignee) only sees work items currently
+// assigned to them — the "assignee sees own assigned work only" rule from
+// the starter's permission matrix. The workitems package deliberately
+// doesn't import the auth package, so the caller (the HTTP handler, which
+// does know about roles) resolves "is this an admin / supervisor /
+// requester" into plain bools before calling this method.
+func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool, callerIsRequester bool) ([]WorkItem, error) {
 	if callerIsAdmin {
 		return s.store.List(ctx)
 	}
@@ -142,6 +145,10 @@ func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bo
 
 	if callerIsSupervisor {
 		return s.listForSupervisor(ctx, callerUserID)
+	}
+
+	if callerIsRequester {
+		return s.store.ListByCreatedByUserID(ctx, callerUserID)
 	}
 
 	return s.store.ListByAssignedToUserID(ctx, callerUserID)
@@ -194,7 +201,7 @@ func (s Service) listForSupervisor(ctx context.Context, callerUserID string) ([]
 // their point of view the work item does not exist, rather than
 // existing-but-hidden. This avoids revealing that a given id belongs to
 // someone else.
-func (s Service) GetByID(ctx context.Context, id string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) (WorkItem, error) {
+func (s Service) GetByID(ctx context.Context, id string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool, callerIsRequester bool) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
@@ -205,6 +212,14 @@ func (s Service) GetByID(ctx context.Context, id string, callerUserID string, ca
 	}
 
 	if callerIsAdmin {
+		return item, nil
+	}
+
+	if callerIsRequester {
+		if item.CreatedByUserID != callerUserID {
+			return WorkItem{}, ErrNotFound
+		}
+
 		return item, nil
 	}
 
@@ -631,7 +646,15 @@ func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, c
 // team — supervisorMayActOn closes that: only the item's own creator (or
 // admin) may assign it in the first place. An admin caller is
 // unrestricted, as before.
-func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, assignedByIsSupervisor bool, input AssignInput) (Assignment, error) {
+//
+// assignedByIsAdmin exists explicitly (OPS-047), rather than treating
+// "not a supervisor" as "must be admin," the way this method's signature
+// used to work. That shortcut was safe only as long as exactly two roles
+// could ever reach this method — the moment a third, unprivileged role
+// (requester) existed, "not supervisor" silently meant "unrestricted,"
+// which would have let a requester assign anyone to anything. The default
+// case below now explicitly rejects any caller who is neither.
+func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, assignedByIsAdmin bool, assignedByIsSupervisor bool, input AssignInput) (Assignment, error) {
 	assignedToUserID := strings.TrimSpace(input.AssignedToUserID)
 
 	if strings.TrimSpace(workItemID) == "" || strings.TrimSpace(assignedByUserID) == "" || assignedToUserID == "" {
@@ -654,7 +677,10 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 			return err
 		}
 
-		if assignedByIsSupervisor {
+		switch {
+		case assignedByIsAdmin:
+			// unrestricted
+		case assignedByIsSupervisor:
 			allowed, err := s.supervisorMayActOn(ctx, assignedByUserID, item)
 			if err != nil {
 				return err
@@ -674,6 +700,8 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 			if !destinationAllowed {
 				return ErrNotFound
 			}
+		default:
+			return ErrNotFound
 		}
 
 		if !IsValidTransition(item.Status, StatusAssigned) {
