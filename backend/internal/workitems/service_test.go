@@ -1289,7 +1289,46 @@ func TestChangeStatusToFlaggedRequiresFeedbackRegardlessOfEntryPoint(t *testing.
 
 // --- OPS-046: Update team scoping ---
 
-func TestSupervisorCanEditOwnTeamsWorkItem(t *testing.T) {
+func TestSupervisorCanEditOwnUnassignedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, teamSvc := newSupervisorTestService(t)
+
+	team, err := teamSvc.CreateTeam(ctx, "Team A")
+	if err != nil {
+		t.Fatalf("expected team to create, got error: %v", err)
+	}
+	if _, err := teamSvc.AddSupervisor(ctx, team.ID, "user-supervisor-001", "user-admin-001"); err != nil {
+		t.Fatalf("expected supervisor to be added, got error: %v", err)
+	}
+
+	item, err := service.Create(ctx, "user-supervisor-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	// Editable before it's even assigned — the supervisor created it.
+	updatedTitle := "Repaint the main gate"
+	updated, err := service.Update(ctx, item.ID, "user-supervisor-001", false, true, UpdateInput{Title: &updatedTitle})
+	if err != nil {
+		t.Fatalf("expected supervisor to edit their own unassigned item, got error: %v", err)
+	}
+	if updated.Title != updatedTitle {
+		t.Fatalf("expected title %q, got %q", updatedTitle, updated.Title)
+	}
+}
+
+// TestSupervisorCannotEditOnceAssigned closes a real gap a review caught on
+// PR #54: the permission matrix's action is literally "Edit unassigned work
+// item" — supervisorMayActOn alone checks *who* may act on a team's work,
+// not *when*, so without this extra gate a supervisor could keep rewriting
+// a work item's core fields straight through verified/completed. Admin is
+// unaffected — admin's edit latitude stays unrestricted at any status, same
+// as everywhere else in this package.
+func TestSupervisorCannotEditOnceAssigned(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1313,17 +1352,6 @@ func TestSupervisorCanEditOwnTeamsWorkItem(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	// Editable before it's even assigned — the supervisor created it.
-	updatedTitle := "Repaint the main gate"
-	updated, err := service.Update(ctx, item.ID, "user-supervisor-001", false, true, UpdateInput{Title: &updatedTitle})
-	if err != nil {
-		t.Fatalf("expected supervisor to edit their own unassigned item, got error: %v", err)
-	}
-	if updated.Title != updatedTitle {
-		t.Fatalf("expected title %q, got %q", updatedTitle, updated.Title)
-	}
-
-	// Still editable once assigned to someone on their team.
 	if _, err := service.AssignWorkItem(ctx, item.ID, "user-supervisor-001", true, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
@@ -1331,8 +1359,42 @@ func TestSupervisorCanEditOwnTeamsWorkItem(t *testing.T) {
 	}
 
 	updatedDescription := "Repaint the main gate, front and back"
-	if _, err := service.Update(ctx, item.ID, "user-supervisor-001", false, true, UpdateInput{Description: &updatedDescription}); err != nil {
-		t.Fatalf("expected supervisor to edit their own team's assigned item, got error: %v", err)
+	_, err = service.Update(ctx, item.ID, "user-supervisor-001", false, true, UpdateInput{Description: &updatedDescription})
+	if !errors.Is(err, ErrAlreadyAssigned) {
+		t.Fatalf("expected supervisor edit of an assigned item to be rejected, got %v", err)
+	}
+}
+
+// TestAdminCanEditWorkItemAtAnyStatus confirms OPS-046/the PR #54 review fix
+// only narrows the supervisor path — admin keeps unrestricted edit
+// latitude regardless of the work item's current status, matching admin's
+// behavior everywhere else in this package.
+func TestAdminCanEditWorkItemAtAnyStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil)
+
+	item, err := service.Create(ctx, "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(ctx, item.ID, "user-admin-001", false, AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+
+	updatedTitle := "Still editable by admin"
+	updated, err := service.Update(ctx, item.ID, "user-admin-001", true, false, UpdateInput{Title: &updatedTitle})
+	if err != nil {
+		t.Fatalf("expected admin to edit an assigned item, got error: %v", err)
+	}
+	if updated.Title != updatedTitle {
+		t.Fatalf("expected title %q, got %q", updatedTitle, updated.Title)
 	}
 }
 

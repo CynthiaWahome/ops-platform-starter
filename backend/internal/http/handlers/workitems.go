@@ -119,7 +119,7 @@ func (h WorkItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 	item, err := h.service.Update(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), input)
 	if err != nil {
 		switch {
-		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidPriority):
+		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidPriority), errors.Is(err, workitems.ErrAlreadyAssigned):
 			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
 		case errors.Is(err, workitems.ErrNotFound):
 			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})

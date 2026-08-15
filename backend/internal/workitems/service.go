@@ -199,17 +199,24 @@ func (s Service) GetByID(ctx context.Context, id string, callerUserID string, ca
 }
 
 // Update edits a work item's editable fields, scoped for OPS-046: admin can
-// edit anything, a supervisor can only edit work items they may act on via
-// supervisorMayActOn (their own team's, or their own not-yet-assigned
-// creation), and no one else may edit at all — per the permission matrix,
-// "Edit unassigned work item" is Admin: Yes, Supervisor: own team's only,
-// Assignee: No. This deliberately does not reuse mayView: mayView also
-// grants an assignee read access to their own assigned item, which is
-// correct for viewing but wrong for editing — Update has no assignee path
-// at all. Before OPS-046 this had no caller/ownership check whatsoever —
-// any admin-gated caller could edit any work item — which happened to be
-// harmless while the route was admin-only, but became a real gap the
-// moment the route needed to open up to supervisor as well.
+// edit anything at any status, a supervisor can only edit their own team's
+// work items — and, per the permission matrix's literal action name
+// ("Edit unassigned work item"), only while the item is still unassigned.
+// Once a supervisor hands a work item off, its title/description/priority
+// stop being theirs to rewrite; admin keeps the broader, unrestricted-at-
+// any-status latitude it already has everywhere else in this package. A
+// review on PR #54 caught this: supervisorMayActOn alone (reused
+// everywhere else for team-scoped actions) checks *who* may act, not
+// *when* — its assigned-item branch has no status check, so without this
+// extra gate a supervisor could keep editing a work item's core fields
+// straight through verified/completed. This deliberately does not reuse
+// mayView either: mayView grants an assignee read access to their own
+// assigned item, correct for viewing but wrong for editing — Update has
+// no assignee path at all. Before OPS-046 this had no caller/ownership
+// check whatsoever — any admin-gated caller could edit any work item at
+// any status — which happened to be harmless while the route was
+// admin-only, but became a real gap the moment the route needed to open
+// up to supervisor as well.
 func (s Service) Update(ctx context.Context, id string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool, input UpdateInput) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" {
 		return WorkItem{}, ErrInvalidInput
@@ -222,14 +229,24 @@ func (s Service) Update(ctx context.Context, id string, callerUserID string, cal
 
 	switch {
 	case callerIsAdmin:
-		// unrestricted
+		// unrestricted, any status
 	case callerIsSupervisor:
+		// Authority (can this supervisor see/act on this item at all)
+		// is checked before the assigned-status business rule below —
+		// same ordering ChangeStatus already uses (ownership before
+		// transition legality) — so a supervisor with no authority over
+		// this item at all still gets ErrNotFound, not a hint that the
+		// item exists and is merely "already assigned."
 		allowed, err := s.supervisorMayActOn(ctx, callerUserID, item)
 		if err != nil {
 			return WorkItem{}, err
 		}
 		if !allowed {
 			return WorkItem{}, ErrNotFound
+		}
+
+		if item.AssignedToUserID != nil {
+			return WorkItem{}, ErrAlreadyAssigned
 		}
 	default:
 		return WorkItem{}, ErrNotFound
