@@ -175,7 +175,7 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor, input)
+	item, err := h.service.ChangeStatus(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor, principal.HasRole(auth.RoleRequester), input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput),
@@ -220,7 +220,7 @@ func (h WorkItemHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), workitems.ChangeStatusInput{
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), principal.HasRole(auth.RoleRequester), workitems.ChangeStatusInput{
 		ToStatus: workitems.StatusVerified,
 		Reason:   input.Note,
 	})
@@ -267,7 +267,7 @@ func (h WorkItemHandler) Flag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), workitems.ChangeStatusInput{
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), principal.HasRole(auth.RoleRequester), workitems.ChangeStatusInput{
 		ToStatus: workitems.StatusFlagged,
 		Reason:   &note,
 	})
@@ -420,7 +420,7 @@ func (h WorkItemHandler) respondToAssignment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	assignment, err := h.service.RespondToAssignment(r.Context(), r.PathValue("id"), principal.UserID, accept, input)
+	assignment, err := h.service.RespondToAssignment(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleRequester), accept, input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
