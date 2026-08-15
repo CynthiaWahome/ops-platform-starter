@@ -44,19 +44,6 @@ backend/*.test
 backend/*.out
 backend/uploads/
 
-# Next.js / Node frontend
-frontend/node_modules/
-frontend/.next/
-frontend/out/
-frontend/.turbo/
-frontend/.env
-frontend/.env.local
-frontend/.env.development.local
-frontend/.env.test.local
-frontend/.env.production.local
-frontend/.env.*.local
-frontend/coverage/
-frontend/.npm/
 
 # Package manager artifacts
 package-lock.json.*
