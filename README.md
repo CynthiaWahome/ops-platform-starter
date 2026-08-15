@@ -1,13 +1,13 @@
 # ops-platform-starter
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js&logoColor=white)](https://nextjs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Project Board](https://img.shields.io/badge/GitHub_Project-Active-6e40c9?logo=github&logoColor=white)](https://github.com/users/CynthiaWahome/projects/7)
 [![Issues](https://img.shields.io/github/issues/CynthiaWahome/ops-platform-starter)](https://github.com/CynthiaWahome/ops-platform-starter/issues)
 
-Reusable starter architecture for role-based operations software built with Go on the backend and Next.js on the frontend.
+Reusable backend for role-based operations software, built in Go. REST/JSON — bring your own frontend. (Reference frontend: [ops-platform-starter-frontend](https://github.com/CynthiaWahome/ops-platform-starter-frontend), private.)
+
+> **Note:** this README covers the current state honestly, but it's a working document — a full rewrite is planned as the last task in this project (see `OPS_PLATFORM_STARTER_BUILD_TICKETS.md`, OPS-049), once the repo's final shape is settled.
 
 ## Overview
 
@@ -52,46 +52,21 @@ The first reusable implementation target is a shared core for:
 
 ## Tech stack
 
-### Backend
-
-- Go
-- standard module structure under `backend/`
-
-### Frontend
-
-- Next.js
-- TypeScript
-- Tailwind CSS
-- App Router structure under `frontend/`
+- Go, standard `net/http` (no framework — deliberate, see `notes/`)
+- PostgreSQL, optional — every store also has an in-memory implementation, which is the zero-setup default
+- Frontend: none in this repo, by design. Plain REST/JSON, so any language/framework can consume it. See [ops-platform-starter-frontend](https://github.com/CynthiaWahome/ops-platform-starter-frontend) for a reference Next.js implementation.
 
 ## Repository structure
 
 ```text
 ops-platform-starter/
-├── backend/   # Go API
-└── frontend/  # Next.js application
+└── backend/   # Go API — cmd/, internal/, migrations
 ```
-
-This scaffold is intentionally thin right now. The real domain structure will be added incrementally as the starter matures.
 
 ## Current status
 
-Current branch state:
-
-- repo initialized
-- Go module scaffold started
-- Next.js frontend scaffolded
-- PR template added
-- GitHub milestones, issues, and project board created
-
-What is not built yet:
-
-- auth flow
-- work item model
-- assignment flow
-- status engine
-- evidence upload loop
-- verification workflow
+- Auth (JWT, 4 bootstrap roles: admin/supervisor/assignee/requester), full work item lifecycle (create → assign → accept/decline → in progress → submitted for review → verify/flag → completed), teams with scoped supervisor authority, notifications, attachments, and real Postgres persistence (optional, in-memory by default) are all built and tested.
+- No frontend in this repo (see above) — that's the immediate next phase, tracked in the separate frontend repo.
 
 ## Planning and backlog
 
@@ -110,16 +85,6 @@ The issues are grouped into these milestones:
 6. `M5 - Mapping and Adoption`
 
 ## Getting started
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### Backend
 
 ```bash
 cd backend
@@ -146,28 +111,21 @@ persistence — the schema is migrated automatically on startup (see
 
 ## Development approach
 
-This repository will be built in thin vertical slices rather than broad abstract layers.
-
-The first meaningful slice is:
+Built in thin vertical slices rather than broad abstract layers — each ticket is a real, tested, manually-verified feature, not a stub. The core workflow loop:
 
 ```text
-admin creates or reviews a work item
--> admin assigns it
--> assignee accepts it
--> assignee uploads evidence
--> admin verifies or flags it
+work item created
+-> assigned to a worker/provider (by admin or their team's supervisor)
+-> assignee accepts, works it, uploads evidence
+-> admin or the team's supervisor verifies or flags it
+-> work item closes
 ```
-
-That slice is the first proof that the starter is actually reusable.
 
 ## Next steps
 
-The immediate next engineering steps are:
-
-1. lock the backend foundation shape in Go
-2. add base API structure under `backend/`
-3. establish frontend app shell structure beyond scaffold defaults
-4. implement the first auth and role-aware workflow slice
+- Frontend (see [ops-platform-starter-frontend](https://github.com/CynthiaWahome/ops-platform-starter-frontend))
+- `requester` role signup flow (self-service account creation)
+- README rewrite as the last task in this project (OPS-049)
 
 ## Notes
 
