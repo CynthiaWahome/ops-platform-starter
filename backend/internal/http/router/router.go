@@ -8,6 +8,7 @@ import (
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/handlers"
 	httpmiddleware "github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/notifications"
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/workitems"
 )
 
@@ -18,7 +19,13 @@ func New(cfg config.Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	workItemService := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore(), workitems.NewMemoryAssignmentHistoryStore())
+	// Built before workItemService and passed in as its NotificationSink —
+	// notifications.Service satisfies that interface by having a matching
+	// Notify method, nothing more is needed to wire it in. Kept as its
+	// own variable (not just an inline argument) because the notification
+	// handler below needs the same instance to read notifications back.
+	notificationService := notifications.NewService(notifications.NewMemoryStore())
+	workItemService := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore(), workitems.NewMemoryAssignmentHistoryStore(), notificationService)
 
 	attachmentDiskStorage, err := attachments.NewLocalDiskStorage(cfg.AttachmentUploadDir)
 	if err != nil {
@@ -31,6 +38,7 @@ func New(cfg config.Config) (http.Handler, error) {
 	accessHandler := handlers.NewAccessHandler()
 	workItemHandler := handlers.NewWorkItemHandler(workItemService, attachmentService)
 	attachmentHandler := handlers.NewAttachmentHandler(workItemService, attachmentService)
+	notificationHandler := handlers.NewNotificationHandler(notificationService)
 
 	mux.Handle("GET /health", healthHandler)
 	mux.HandleFunc("POST /auth/login", authHandler.Login)
@@ -152,6 +160,20 @@ func New(cfg config.Config) (http.Handler, error) {
 		httpmiddleware.RequireAuth(
 			authService,
 			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.List), auth.RoleAdmin, auth.RoleAssignee),
+		),
+	)
+	mux.Handle(
+		"GET /notifications",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(notificationHandler.List), auth.RoleAdmin, auth.RoleAssignee),
+		),
+	)
+	mux.Handle(
+		"POST /notifications/{id}/read",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequireRoles(http.HandlerFunc(notificationHandler.MarkAsRead), auth.RoleAdmin, auth.RoleAssignee),
 		),
 	)
 
