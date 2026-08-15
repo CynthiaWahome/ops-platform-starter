@@ -60,7 +60,9 @@ The first reusable implementation target is a shared core for:
 
 ```text
 ops-platform-starter/
-└── backend/   # Go API — cmd/, internal/, migrations
+├── cmd/api/         # entrypoint
+├── internal/        # config, http, workitems, teams, notifications, attachments, db
+└── docker-compose.yml
 ```
 
 ## Current status
@@ -87,7 +89,6 @@ The issues are grouped into these milestones:
 ## Getting started
 
 ```bash
-cd backend
 go mod tidy
 go run ./cmd/api
 ```
@@ -99,7 +100,6 @@ should work with zero setup.
 To run against real Postgres instead (OPS-048):
 
 ```bash
-cd backend
 docker compose up -d
 DATABASE_URL="postgres://postgres:postgres@localhost:5432/ops_platform?sslmode=disable" go run ./cmd/api
 ```

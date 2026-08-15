@@ -34,15 +34,13 @@ tmp/
 temp/
 *.tmp
 
-# Go backend
-backend/.env
-backend/bin/
-backend/tmp/
-backend/coverage.out
-backend/coverage.txt
-backend/*.test
-backend/*.out
-backend/uploads/
+# Go
+bin/
+coverage.out
+coverage.txt
+*.test
+*.out
+uploads/
 
 
 # Package manager artifacts
