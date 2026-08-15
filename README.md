@@ -7,9 +7,9 @@
 [![-CI-](https://img.shields.io/github/actions/workflow/status/CynthiaWahome/ops-platform-starter/ci.yml?branch=dev&style=for-the-badge&label=CI)](https://github.com/CynthiaWahome/ops-platform-starter/actions)
 [![-MIT_License-](https://img.shields.io/badge/-MIT_License-yellow?style=for-the-badge)](LICENSE)
 
-**A production-grade backend for work order management, field service dispatch, and task assignment software — the slice of an enterprise ERP a small operations team actually uses, without the rest.**
+**The backend for a work order management system — create, assign, track, and verify work, with real role-based access control and a real status-transition engine underneath.**
 
-Go. REST/JSON. Real role-based access control, a real status-transition engine, real Postgres persistence — bring your own frontend, in whatever stack you already run.
+Not a scheduling/routing/billing suite (that's field service management, a bigger, different category) — the core work order lifecycle, done properly, with nothing bolted on. Go, REST/JSON, bring your own frontend.
 
 ## Table of Contents
 
@@ -25,19 +25,21 @@ Go. REST/JSON. Real role-based access control, a real status-transition engine, 
 
 ## Why this exists
 
-Most small and mid-sized operations businesses — dispatch services, field task tracking, provider and worker coordination — get forced into a bad tradeoff: build a bespoke internal tool from scratch, or adopt something the size of SAP to get one workflow they actually need.
+Most small and mid-sized operations businesses need a **work order management system** — something to create work, assign it, track it, and get it signed off — and end up forced into a bad tradeoff: build a bespoke internal tool from scratch, or adopt something the size of SAP to get one workflow they actually need.
 
-That workflow repeats across almost every ops business:
+That work order lifecycle repeats across almost every ops business:
 
 ```text
-work item created
+work order created
 -> assigned to a worker/provider
 -> assignee updates progress and uploads evidence
 -> internal reviewer verifies or flags it
--> work item closes
+-> work order closes
 ```
 
-This is that workflow, built once, built properly, and reusable — not a finance module, not an HR suite, not a CRM bolted on for good measure. Those are legitimately separate systems. Bundling them is exactly how ops software ends up bloated and expensive for a business that only ever needed the one core loop.
+This is that lifecycle, built once, built properly, and reusable — not a finance module, not an HR suite, not a CRM bolted on for good measure. Those are legitimately separate systems. Bundling them is exactly how work order software ends up bloated and expensive for a business that only ever needed the one core loop.
+
+**Work order management, not field service management** — worth being precise about the difference. Field service management (FSM) is the bigger category: scheduling, route optimization, technician GPS tracking, billing, customer communication. This doesn't do any of that. It's specifically the work order lifecycle — create, assign, track, verify, close — done well, with real access control underneath. If a project needs the full FSM suite, this isn't it. If it needs this one core piece, done properly, it is.
 
 ## Who this is for
 
@@ -48,10 +50,10 @@ This is that workflow, built once, built properly, and reusable — not a financ
 
 ## What it does
 
-- **Full work item lifecycle** — created → assigned → accepted/declined → in progress → submitted for review → verified/flagged → completed, enforced by a real status-transition state machine, not a free-text field
+- **Full work order lifecycle** — created → assigned → accepted/declined → in progress → submitted for review → verified/flagged → completed, enforced by a real status-transition state machine, not a free-text field
 - **Role-scoped visibility and permissions**, enforced server-side (see [Roles](#roles))
 - **Teams** — assignees belong to exactly one team; supervisors run their own team's day-to-day work without every action routing through a single admin account
-- **Evidence upload and verification** — attachments tied to a work item, required before it can move to review
+- **Evidence upload and verification** — attachments tied to a work order, required before it can move to review
 - **Assignment and status audit trails** — every reassignment and every status change is a permanent, queryable record
 - **In-app notifications** for the events people actually wait on
 - **Real persistence, optional** — every store has a Postgres implementation *and* an in-memory one. Run with zero setup, or set `DATABASE_URL` for a real, restart-surviving database
