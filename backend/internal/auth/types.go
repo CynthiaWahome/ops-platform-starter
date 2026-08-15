@@ -14,9 +14,9 @@ var (
 type Role string
 
 const (
-	RoleAdmin     Role = "admin"
-	RoleAssignee  Role = "assignee"
-	RoleRequester Role = "requester"
+	RoleAdmin      Role = "admin"
+	RoleAssignee   Role = "assignee"
+	RoleSupervisor Role = "supervisor"
 )
 
 type User struct {

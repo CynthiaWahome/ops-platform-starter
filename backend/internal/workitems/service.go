@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// TeamAuthority is the one thing this package needs from the teams package
+// to scope a supervisor's actions — defined here, at the point of
+// consumption, and satisfied structurally by teams.Service with no import
+// of teams needed on either side ("accept interfaces, return structs").
+type TeamAuthority interface {
+	IsActiveSupervisorOf(ctx context.Context, supervisorUserID, assigneeUserID string) (bool, error)
+	SupervisedAssigneeUserIDs(ctx context.Context, supervisorUserID string) ([]string, error)
+}
+
 // NotificationSink is the seam OPS-041 uses to raise a notification as a
 // side effect of a workflow event, without workitems depending on the
 // notifications package concretely. Defined here, where it's consumed,
@@ -25,16 +34,18 @@ type Service struct {
 	assignmentStore        AssignmentStore
 	assignmentHistoryStore AssignmentHistoryStore
 	notifier               NotificationSink
+	teamAuthority          TeamAuthority
 	now                    func() time.Time
 }
 
-func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore, assignmentHistoryStore AssignmentHistoryStore, notifier NotificationSink) Service {
+func NewService(store Store, historyStore StatusHistoryStore, assignmentStore AssignmentStore, assignmentHistoryStore AssignmentHistoryStore, notifier NotificationSink, teamAuthority TeamAuthority) Service {
 	return Service{
 		store:                  store,
 		historyStore:           historyStore,
 		assignmentStore:        assignmentStore,
 		assignmentHistoryStore: assignmentHistoryStore,
 		notifier:               notifier,
+		teamAuthority:          teamAuthority,
 		now:                    time.Now,
 	}
 }
@@ -82,13 +93,16 @@ func (s Service) Create(ctx context.Context, createdByUserID string, input Creat
 }
 
 // List returns work items scoped to the caller. An admin sees every work
-// item. A non-admin caller only sees work items currently assigned to
-// them — the "assignee sees own assigned work only" rule from the
-// starter's permission matrix. The workitems package deliberately doesn't
-// import the auth package, so the caller (the HTTP handler, which does
-// know about roles) resolves "is this an admin" into a plain bool before
-// calling this method.
-func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bool) ([]WorkItem, error) {
+// item. A supervisor (OPS-045) sees work items currently assigned to
+// anyone on a team they actively supervise, plus their own not-yet-assigned
+// work — the same "own team, plus own unassigned drafts" shape
+// supervisorMayActOn uses for actions. A plain caller (assignee) only sees
+// work items currently assigned to them — the "assignee sees own assigned
+// work only" rule from the starter's permission matrix. The workitems
+// package deliberately doesn't import the auth package, so the caller (the
+// HTTP handler, which does know about roles) resolves "is this an admin /
+// supervisor" into plain bools before calling this method.
+func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) ([]WorkItem, error) {
 	if callerIsAdmin {
 		return s.store.List(ctx)
 	}
@@ -97,15 +111,61 @@ func (s Service) List(ctx context.Context, callerUserID string, callerIsAdmin bo
 		return nil, ErrInvalidInput
 	}
 
+	if callerIsSupervisor {
+		return s.listForSupervisor(ctx, callerUserID)
+	}
+
 	return s.store.ListByAssignedToUserID(ctx, callerUserID)
 }
 
-// GetByID returns one work item, scoped the same way as List. A non-admin
-// caller asking for a work item that isn't assigned to them gets
-// ErrNotFound, not a "forbidden" error — from their point of view the work
-// item does not exist, rather than existing-but-hidden. This avoids
-// revealing that a given id belongs to someone else.
-func (s Service) GetByID(ctx context.Context, id string, callerUserID string, callerIsAdmin bool) (WorkItem, error) {
+// listForSupervisor filters every work item down to the ones a supervisor
+// may see: assigned to someone on a team they supervise, or created by them
+// and not yet assigned to anyone. It walks the full store rather than
+// adding a new indexed lookup — the starter's in-memory stores are small by
+// design, and a real persistence layer would express this as a WHERE
+// clause instead of an in-process filter.
+func (s Service) listForSupervisor(ctx context.Context, callerUserID string) ([]WorkItem, error) {
+	all, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var supervisedAssigneeIDs []string
+	if s.teamAuthority != nil {
+		supervisedAssigneeIDs, err = s.teamAuthority.SupervisedAssigneeUserIDs(ctx, callerUserID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	supervised := make(map[string]bool, len(supervisedAssigneeIDs))
+	for _, userID := range supervisedAssigneeIDs {
+		supervised[userID] = true
+	}
+
+	visible := make([]WorkItem, 0)
+	for _, item := range all {
+		if item.AssignedToUserID != nil {
+			if supervised[*item.AssignedToUserID] {
+				visible = append(visible, item)
+			}
+			continue
+		}
+
+		if item.CreatedByUserID == callerUserID {
+			visible = append(visible, item)
+		}
+	}
+
+	return visible, nil
+}
+
+// GetByID returns one work item, scoped the same way as List. A caller who
+// cannot see a work item gets ErrNotFound, not a "forbidden" error — from
+// their point of view the work item does not exist, rather than
+// existing-but-hidden. This avoids revealing that a given id belongs to
+// someone else.
+func (s Service) GetByID(ctx context.Context, id string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
@@ -116,6 +176,18 @@ func (s Service) GetByID(ctx context.Context, id string, callerUserID string, ca
 	}
 
 	if callerIsAdmin {
+		return item, nil
+	}
+
+	if callerIsSupervisor {
+		allowed, err := s.supervisorMayActOn(ctx, callerUserID, item)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		if !allowed {
+			return WorkItem{}, ErrNotFound
+		}
+
 		return item, nil
 	}
 
@@ -184,13 +256,21 @@ func (s Service) Update(ctx context.Context, id string, input UpdateInput) (Work
 // saves the new status on the work item, and writes a StatusHistory entry
 // recording what changed, who changed it, and why.
 //
-// An admin caller may trigger any transition IsValidTransition allows. A
-// non-admin caller (an assignee) is restricted twice: the work item must
-// actually be assigned to them (ErrNotFound otherwise, same "acts as if it
-// doesn't exist" rule as GetByID), and the move itself must be one of the
-// few IsAssigneeAllowedTransition grants — issue #42, "start work" and
-// "submit progress update" from the permission matrix, nothing wider.
-func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string, actorIsAdmin bool, input ChangeStatusInput) (WorkItem, error) {
+// An admin caller may trigger any transition IsValidTransition allows, on
+// any work item, unrestricted.
+//
+// A supervisor caller (OPS-045) gets the same transition set as admin — not
+// the narrower assignee list — but only on work items currently assigned to
+// someone on a team they actively supervise, checked via teamAuthority.
+// An unassigned item has no team to check against, so a supervisor may only
+// act on it if they created it themselves.
+//
+// A plain assignee caller is restricted twice: the work item must actually
+// be assigned to them (ErrNotFound otherwise, same "acts as if it doesn't
+// exist" rule as GetByID), and the move itself must be one of the few
+// IsAssigneeAllowedTransition grants — issue #42, "start work" and "submit
+// progress update" from the permission matrix, nothing wider.
+func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string, actorIsAdmin bool, actorIsSupervisor bool, input ChangeStatusInput) (WorkItem, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(actorUserID) == "" {
 		return WorkItem{}, ErrInvalidInput
 	}
@@ -199,12 +279,40 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 		return WorkItem{}, ErrInvalidStatus
 	}
 
+	// Flagging without saying why leaves the assignee with nothing to act
+	// on (see FlagInput's doc comment). The dedicated POST .../flag
+	// handler already enforces this before it ever calls ChangeStatus,
+	// but that only covers callers going through that one route — the
+	// generic PATCH .../status endpoint reaches this same transition with
+	// no such check. Enforcing it here closes it for every entry point
+	// and every caller (admin included), not just the one handler.
+	if input.ToStatus == StatusFlagged && (input.Reason == nil || strings.TrimSpace(*input.Reason) == "") {
+		return WorkItem{}, ErrFeedbackRequired
+	}
+
 	item, err := s.store.GetByID(ctx, id)
 	if err != nil {
 		return WorkItem{}, err
 	}
 
-	if !actorIsAdmin {
+	switch {
+	case actorIsAdmin:
+		if !IsValidTransition(item.Status, input.ToStatus) {
+			return WorkItem{}, ErrInvalidTransition
+		}
+	case actorIsSupervisor:
+		allowed, err := s.supervisorMayActOn(ctx, actorUserID, item)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		if !allowed {
+			return WorkItem{}, ErrNotFound
+		}
+
+		if !IsValidTransition(item.Status, input.ToStatus) {
+			return WorkItem{}, ErrInvalidTransition
+		}
+	default:
 		if item.AssignedToUserID == nil || *item.AssignedToUserID != actorUserID {
 			return WorkItem{}, ErrNotFound
 		}
@@ -212,8 +320,6 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 		if !IsAssigneeAllowedTransition(item.Status, input.ToStatus) {
 			return WorkItem{}, ErrInvalidTransition
 		}
-	} else if !IsValidTransition(item.Status, input.ToStatus) {
-		return WorkItem{}, ErrInvalidTransition
 	}
 
 	fromStatus := item.Status
@@ -238,6 +344,26 @@ func (s Service) ChangeStatus(ctx context.Context, id string, actorUserID string
 	}
 
 	return updated, nil
+}
+
+// supervisorMayActOn reports whether a supervisor caller has authority over
+// a specific work item: either it's currently assigned to someone on a team
+// they actively supervise, or it isn't assigned to anyone yet and they're
+// the one who created it (their own not-yet-assigned work). teamAuthority
+// being nil is treated as "no team authority configured" rather than a
+// panic, so a Service built without it (e.g. an older test) degrades to
+// "supervisors can only act on their own unassigned work" instead of
+// crashing.
+func (s Service) supervisorMayActOn(ctx context.Context, actorUserID string, item WorkItem) (bool, error) {
+	if item.AssignedToUserID == nil {
+		return item.CreatedByUserID == actorUserID, nil
+	}
+
+	if s.teamAuthority == nil {
+		return false, nil
+	}
+
+	return s.teamAuthority.IsActiveSupervisorOf(ctx, actorUserID, *item.AssignedToUserID)
 }
 
 // notificationForStatusChange maps the four Event-Hooks-listed status
@@ -322,6 +448,23 @@ func (s Service) recordAssignmentEvent(ctx context.Context, workItemID string, a
 	return err
 }
 
+// mayView is the shared "can this caller see this work item" check reused
+// by ListStatusHistory, ListAssignmentHistory, and GetAssignment — the same
+// three-way rule GetByID applies: admin sees anything, a supervisor sees
+// their own team's items (via supervisorMayActOn), everyone else only sees
+// work assigned to them.
+func (s Service) mayView(ctx context.Context, item WorkItem, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) (bool, error) {
+	if callerIsAdmin {
+		return true, nil
+	}
+
+	if callerIsSupervisor {
+		return s.supervisorMayActOn(ctx, callerUserID, item)
+	}
+
+	return item.AssignedToUserID != nil && *item.AssignedToUserID == callerUserID, nil
+}
+
 // notify is a small nil-safe wrapper around s.notifier.Notify — every
 // call site already has a workItemID and a human-readable message ready,
 // this just guards against notifier being unset (a caller that
@@ -338,10 +481,9 @@ func (s Service) notify(ctx context.Context, recipientUserID, workItemID, kind, 
 // ListStatusHistory returns every status change recorded for a work item,
 // oldest first. It confirms the work item exists before checking history so
 // callers get a consistent ErrNotFound instead of an empty list for a
-// missing id. A non-admin caller only sees history for a work item assigned
-// to them — same ownership check and same ErrNotFound-not-forbidden shape
-// as GetByID.
-func (s Service) ListStatusHistory(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool) ([]StatusHistory, error) {
+// missing id. A caller who cannot view the work item (see mayView) gets the
+// same ErrNotFound-not-forbidden shape as GetByID.
+func (s Service) ListStatusHistory(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) ([]StatusHistory, error) {
 	if strings.TrimSpace(workItemID) == "" {
 		return nil, ErrInvalidInput
 	}
@@ -351,7 +493,11 @@ func (s Service) ListStatusHistory(ctx context.Context, workItemID string, calle
 		return nil, err
 	}
 
-	if !callerIsAdmin && (item.AssignedToUserID == nil || *item.AssignedToUserID != callerUserID) {
+	allowed, err := s.mayView(ctx, item, callerUserID, callerIsAdmin, callerIsSupervisor)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
 		return nil, ErrNotFound
 	}
 
@@ -359,11 +505,9 @@ func (s Service) ListStatusHistory(ctx context.Context, workItemID string, calle
 }
 
 // ListAssignmentHistory returns every assignment event recorded for a
-// work item, oldest first — the OPS-040 audit trail. Scoped identically
-// to ListStatusHistory: an admin sees any work item's assignment
-// history, a non-admin caller only sees it for a work item currently
-// assigned to them.
-func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool) ([]AssignmentHistory, error) {
+// work item, oldest first — the OPS-040 audit trail. Scoped identically to
+// ListStatusHistory via mayView.
+func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) ([]AssignmentHistory, error) {
 	if strings.TrimSpace(workItemID) == "" {
 		return nil, ErrInvalidInput
 	}
@@ -373,7 +517,11 @@ func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, c
 		return nil, err
 	}
 
-	if !callerIsAdmin && (item.AssignedToUserID == nil || *item.AssignedToUserID != callerUserID) {
+	allowed, err := s.mayView(ctx, item, callerUserID, callerIsAdmin, callerIsSupervisor)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
 		return nil, ErrNotFound
 	}
 
@@ -385,7 +533,18 @@ func (s Service) ListAssignmentHistory(ctx context.Context, workItemID string, c
 // StatusAssigned from a status that already allows it (StatusCreated), so
 // a work item that has already been assigned, or moved further along, is
 // rejected by the same IsValidTransition check rather than a new rule.
-func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, input AssignInput) (Assignment, error) {
+//
+// A supervisor caller (OPS-045) is checked two ways, both of which must
+// pass: supervisorMayActOn confirms they may act on this specific work
+// item at all (it's their own not-yet-assigned creation — an unassigned
+// item has no team to check against yet), and teamAuthority confirms the
+// destination assigneeToUserID is on a team they actively supervise. The
+// first check alone would let a supervisor "adopt" someone else's hidden
+// unassigned item just by knowing its id and pointing it at their own
+// team — supervisorMayActOn closes that: only the item's own creator (or
+// admin) may assign it in the first place. An admin caller is
+// unrestricted, as before.
+func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assignedByUserID string, assignedByIsSupervisor bool, input AssignInput) (Assignment, error) {
 	assignedToUserID := strings.TrimSpace(input.AssignedToUserID)
 
 	if strings.TrimSpace(workItemID) == "" || strings.TrimSpace(assignedByUserID) == "" || assignedToUserID == "" {
@@ -395,6 +554,28 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 	item, err := s.store.GetByID(ctx, workItemID)
 	if err != nil {
 		return Assignment{}, err
+	}
+
+	if assignedByIsSupervisor {
+		allowed, err := s.supervisorMayActOn(ctx, assignedByUserID, item)
+		if err != nil {
+			return Assignment{}, err
+		}
+		if !allowed {
+			return Assignment{}, ErrNotFound
+		}
+
+		if s.teamAuthority == nil {
+			return Assignment{}, ErrNotFound
+		}
+
+		destinationAllowed, err := s.teamAuthority.IsActiveSupervisorOf(ctx, assignedByUserID, assignedToUserID)
+		if err != nil {
+			return Assignment{}, err
+		}
+		if !destinationAllowed {
+			return Assignment{}, ErrNotFound
+		}
 	}
 
 	if !IsValidTransition(item.Status, StatusAssigned) {
@@ -443,7 +624,7 @@ func (s Service) AssignWorkItem(ctx context.Context, workItemID string, assigned
 // has never been assigned come back as two distinguishable errors instead
 // of both looking like "not found" for the same reason. A non-admin caller
 // only sees the assignment for a work item assigned to them.
-func (s Service) GetAssignment(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool) (Assignment, error) {
+func (s Service) GetAssignment(ctx context.Context, workItemID string, callerUserID string, callerIsAdmin bool, callerIsSupervisor bool) (Assignment, error) {
 	if strings.TrimSpace(workItemID) == "" {
 		return Assignment{}, ErrInvalidInput
 	}
@@ -453,7 +634,11 @@ func (s Service) GetAssignment(ctx context.Context, workItemID string, callerUse
 		return Assignment{}, err
 	}
 
-	if !callerIsAdmin && (item.AssignedToUserID == nil || *item.AssignedToUserID != callerUserID) {
+	allowed, err := s.mayView(ctx, item, callerUserID, callerIsAdmin, callerIsSupervisor)
+	if err != nil {
+		return Assignment{}, err
+	}
+	if !allowed {
 		return Assignment{}, ErrNotFound
 	}
 

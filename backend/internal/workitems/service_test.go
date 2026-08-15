@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/notifications"
+	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/teams"
 )
 
 func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore())).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 17, 30, 0, 0, time.UTC)
 	})
 
@@ -41,7 +42,7 @@ func TestServiceCreateGeneratesWorkItem(t *testing.T) {
 func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	_, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -56,7 +57,7 @@ func TestServiceCreateRejectsInvalidPriority(t *testing.T) {
 func TestServiceUpdateChangesEditableFields(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore())).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 18, 0, 0, 0, time.UTC)
 	})
 
@@ -92,7 +93,7 @@ func TestServiceUpdateChangesEditableFields(t *testing.T) {
 func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore())).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
 		return time.Date(2026, time.August, 5, 9, 0, 0, 0, time.UTC)
 	})
 
@@ -107,7 +108,7 @@ func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 
 	reason := "assigned to on-call crew"
 
-	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, ChangeStatusInput{
+	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, false, ChangeStatusInput{
 		ToStatus: StatusAssigned,
 		Reason:   &reason,
 	})
@@ -119,7 +120,7 @@ func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 		t.Fatalf("expected status %q, got %q", StatusAssigned, updated.Status)
 	}
 
-	history, err := service.ListStatusHistory(context.Background(), item.ID, "user-admin-001", true)
+	history, err := service.ListStatusHistory(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected history lookup to succeed, got error: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestServiceChangeStatusRecordsHistory(t *testing.T) {
 func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -161,7 +162,7 @@ func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, ChangeStatusInput{
+	_, err = service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, false, ChangeStatusInput{
 		ToStatus: StatusCompleted,
 	})
 	if !errors.Is(err, ErrInvalidTransition) {
@@ -172,7 +173,7 @@ func TestServiceChangeStatusRejectsIllegalTransition(t *testing.T) {
 func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore())).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
 		return time.Date(2026, time.August, 5, 10, 0, 0, 0, time.UTC)
 	})
 
@@ -185,7 +186,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	assignment, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	assignment, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	})
 	if err != nil {
@@ -204,7 +205,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 		t.Fatalf("expected assignment status %q, got %q", AssignmentStatusAssigned, assignment.Status)
 	}
 
-	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true)
+	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected get by id to succeed, got error: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 		t.Fatalf("expected work item assignedToUserId to be set, got %v", updated.AssignedToUserID)
 	}
 
-	history, err := service.ListStatusHistory(context.Background(), item.ID, "user-admin-001", true)
+	history, err := service.ListStatusHistory(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected history lookup to succeed, got error: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 		t.Fatalf("expected history entry to status %q, got %q", StatusAssigned, history[0].ToStatus)
 	}
 
-	fetched, err := service.GetAssignment(context.Background(), item.ID, "user-admin-001", true)
+	fetched, err := service.GetAssignment(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected get assignment to succeed, got error: %v", err)
 	}
@@ -243,7 +244,7 @@ func TestServiceAssignWorkItemCreatesAssignmentAndMovesStatus(t *testing.T) {
 func TestServiceAssignWorkItemRejectsSecondAssignment(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -254,14 +255,14 @@ func TestServiceAssignWorkItemRejectsSecondAssignment(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	})
 	if err != nil {
 		t.Fatalf("expected first assign to succeed, got error: %v", err)
 	}
 
-	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-002",
 	})
 	if !errors.Is(err, ErrInvalidTransition) {
@@ -272,7 +273,7 @@ func TestServiceAssignWorkItemRejectsSecondAssignment(t *testing.T) {
 func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -283,7 +284,7 @@ func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.GetAssignment(context.Background(), item.ID, "user-admin-001", true)
+	_, err = service.GetAssignment(context.Background(), item.ID, "user-admin-001", true, false)
 	if !errors.Is(err, ErrAssignmentNotFound) {
 		t.Fatalf("expected assignment not found error, got %v", err)
 	}
@@ -292,7 +293,7 @@ func TestServiceGetAssignmentReturnsNotFoundBeforeAnyAssignment(t *testing.T) {
 func TestServiceRespondToAssignmentAccept(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore())).WithClock(func() time.Time {
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
 		return time.Date(2026, time.August, 6, 9, 0, 0, 0, time.UTC)
 	})
 
@@ -305,7 +306,7 @@ func TestServiceRespondToAssignmentAccept(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	})
 	if err != nil {
@@ -333,7 +334,7 @@ func TestServiceRespondToAssignmentAccept(t *testing.T) {
 		t.Fatalf("expected response note %q, got %v", note, assignment.ResponseNote)
 	}
 
-	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true)
+	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected get by id to succeed, got error: %v", err)
 	}
@@ -350,7 +351,7 @@ func TestServiceRespondToAssignmentAccept(t *testing.T) {
 func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -361,7 +362,7 @@ func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T)
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	})
 	if err != nil {
@@ -377,7 +378,7 @@ func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T)
 		t.Fatalf("expected assignment status %q, got %q", AssignmentStatusDeclined, assignment.Status)
 	}
 
-	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true)
+	updated, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected get by id to succeed, got error: %v", err)
 	}
@@ -394,7 +395,7 @@ func TestServiceRespondToAssignmentDeclineBouncesWorkItemToCreated(t *testing.T)
 func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -406,7 +407,7 @@ func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 	}
 
 	// First assignee declines...
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected first assign to succeed, got error: %v", err)
@@ -419,7 +420,7 @@ func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 	// ...so the admin reassigns to someone else, who accepts. AssignmentStore
 	// (the current-state store) now only knows about the second assignee —
 	// this is exactly the gap OPS-040 closes.
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-002",
 	}); err != nil {
 		t.Fatalf("expected reassign to succeed, got error: %v", err)
@@ -430,7 +431,7 @@ func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 	}
 
 	// The current assignment only shows the second assignee.
-	current, err := service.GetAssignment(context.Background(), item.ID, "user-admin-001", true)
+	current, err := service.GetAssignment(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected get assignment to succeed, got error: %v", err)
 	}
@@ -441,7 +442,7 @@ func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 	// But the assignment history has the full trail — all four events,
 	// including the first assignee who is no longer referenced anywhere
 	// else in the system.
-	history, err := service.ListAssignmentHistory(context.Background(), item.ID, "user-admin-001", true)
+	history, err := service.ListAssignmentHistory(context.Background(), item.ID, "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected list assignment history to succeed, got error: %v", err)
 	}
@@ -465,7 +466,7 @@ func TestServiceListAssignmentHistorySurvivesReassignment(t *testing.T) {
 func TestServiceRespondToAssignmentRejectsWrongUser(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -476,7 +477,7 @@ func TestServiceRespondToAssignmentRejectsWrongUser(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	})
 	if err != nil {
@@ -492,7 +493,7 @@ func TestServiceRespondToAssignmentRejectsWrongUser(t *testing.T) {
 func TestServiceRespondToAssignmentRejectsAlreadyRespondedTo(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title:       "Gate repaint",
@@ -503,7 +504,7 @@ func TestServiceRespondToAssignmentRejectsAlreadyRespondedTo(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	_, err = service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	})
 	if err != nil {
@@ -524,7 +525,7 @@ func TestServiceRespondToAssignmentRejectsAlreadyRespondedTo(t *testing.T) {
 func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	itemA, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -539,7 +540,7 @@ func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), itemA.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), itemA.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
@@ -548,7 +549,7 @@ func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
 	// itemB is deliberately left unassigned, so it should never appear in
 	// the assignee's scoped list.
 
-	adminList, err := service.List(context.Background(), "user-admin-001", true)
+	adminList, err := service.List(context.Background(), "user-admin-001", true, false)
 	if err != nil {
 		t.Fatalf("expected admin list to succeed, got error: %v", err)
 	}
@@ -557,7 +558,7 @@ func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
 		t.Fatalf("expected admin to see 2 work items, got %d", len(adminList))
 	}
 
-	assigneeList, err := service.List(context.Background(), "user-assignee-001", false)
+	assigneeList, err := service.List(context.Background(), "user-assignee-001", false, false)
 	if err != nil {
 		t.Fatalf("expected assignee list to succeed, got error: %v", err)
 	}
@@ -574,7 +575,7 @@ func TestServiceListScopesToAdminSeesAllAssigneeSeesOwn(t *testing.T) {
 func TestServiceGetByIDHidesUnownedWorkItemFromAssignee(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -583,27 +584,27 @@ func TestServiceGetByIDHidesUnownedWorkItemFromAssignee(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
 	}
 
 	// The assigned user can see it.
-	if _, err := service.GetByID(context.Background(), item.ID, "user-assignee-001", false); err != nil {
+	if _, err := service.GetByID(context.Background(), item.ID, "user-assignee-001", false, false); err != nil {
 		t.Fatalf("expected assigned user to see the work item, got error: %v", err)
 	}
 
 	// A different assignee cannot — and gets ErrNotFound, not a forbidden
 	// error, so the response doesn't reveal that the id belongs to someone
 	// else.
-	_, err = service.GetByID(context.Background(), item.ID, "user-assignee-999", false)
+	_, err = service.GetByID(context.Background(), item.ID, "user-assignee-999", false, false)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not found error for unowned work item, got %v", err)
 	}
 
 	// An admin can always see it.
-	if _, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true); err != nil {
+	if _, err := service.GetByID(context.Background(), item.ID, "user-admin-001", true, false); err != nil {
 		t.Fatalf("expected admin to see the work item, got error: %v", err)
 	}
 }
@@ -611,7 +612,7 @@ func TestServiceGetByIDHidesUnownedWorkItemFromAssignee(t *testing.T) {
 func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -620,7 +621,7 @@ func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
@@ -632,7 +633,7 @@ func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing
 
 	// The assignee can start work (accepted -> in_progress) on their own
 	// item, as a non-admin caller.
-	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusInProgress,
 	})
 	if err != nil {
@@ -644,7 +645,7 @@ func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing
 	}
 
 	// The assignee can then submit for review.
-	updated, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	updated, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusSubmittedForReview,
 	})
 	if err != nil {
@@ -657,7 +658,7 @@ func TestServiceChangeStatusAllowsAssigneeStartWorkAndSubmitForReview(t *testing
 
 	// But the assignee cannot verify their own submitted work — that stays
 	// admin-only, even though it is a legal transition in the full table.
-	_, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	_, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusVerified,
 	})
 	if !errors.Is(err, ErrInvalidTransition) {
@@ -669,7 +670,7 @@ func TestServiceNotificationsFireForEventHookedTransitionsOnly(t *testing.T) {
 	t.Parallel()
 
 	notificationService := notifications.NewService(notifications.NewMemoryStore())
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -679,7 +680,7 @@ func TestServiceNotificationsFireForEventHookedTransitionsOnly(t *testing.T) {
 	}
 
 	// assignment_created -> the assignee.
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
@@ -692,14 +693,14 @@ func TestServiceNotificationsFireForEventHookedTransitionsOnly(t *testing.T) {
 
 	// Starting work is a real transition but not in the Event Hooks
 	// list — no notification should fire for it.
-	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusInProgress,
 	}); err != nil {
 		t.Fatalf("expected start work to succeed, got error: %v", err)
 	}
 
 	// evidence_submitted -> the creator.
-	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusSubmittedForReview,
 	}); err != nil {
 		t.Fatalf("expected submit for review to succeed, got error: %v", err)
@@ -707,7 +708,7 @@ func TestServiceNotificationsFireForEventHookedTransitionsOnly(t *testing.T) {
 
 	// work_flagged -> the assignee.
 	feedback := "retake the photo"
-	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, ChangeStatusInput{
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, false, ChangeStatusInput{
 		ToStatus: StatusFlagged,
 		Reason:   &feedback,
 	}); err != nil {
@@ -749,7 +750,7 @@ func TestServiceNotificationsDoNotFireOnDecline(t *testing.T) {
 	t.Parallel()
 
 	notificationService := notifications.NewService(notifications.NewMemoryStore())
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService)
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notificationService, nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -758,7 +759,7 @@ func TestServiceNotificationsDoNotFireOnDecline(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
@@ -784,7 +785,7 @@ func TestServiceNotificationsDoNotFireOnDecline(t *testing.T) {
 func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -793,7 +794,7 @@ func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) 
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
@@ -803,13 +804,13 @@ func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) 
 		t.Fatalf("expected accept to succeed, got error: %v", err)
 	}
 
-	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusInProgress,
 	}); err != nil {
 		t.Fatalf("expected assignee to start work, got error: %v", err)
 	}
 
-	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusSubmittedForReview,
 	}); err != nil {
 		t.Fatalf("expected assignee to submit for review, got error: %v", err)
@@ -820,7 +821,7 @@ func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) 
 	// handler-level "note is required" rule lives in the HTTP layer, not
 	// the service.
 	feedback := "Photo is blurry, retake before resubmitting"
-	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, ChangeStatusInput{
+	if _, err := service.ChangeStatus(context.Background(), item.ID, "user-admin-001", true, false, ChangeStatusInput{
 		ToStatus: StatusFlagged,
 		Reason:   &feedback,
 	}); err != nil {
@@ -830,7 +831,7 @@ func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) 
 	// OPS-033: the assignee can now pick the rework back up themselves —
 	// Flagged -> InProgress — without waiting on an admin to move it,
 	// closing the gap between the design doc and the code.
-	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, ChangeStatusInput{
+	updated, err := service.ChangeStatus(context.Background(), item.ID, "user-assignee-001", false, false, ChangeStatusInput{
 		ToStatus: StatusInProgress,
 	})
 	if err != nil {
@@ -845,7 +846,7 @@ func TestServiceChangeStatusAllowsAssigneeToReworkFlaggedWorkItem(t *testing.T) 
 func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -854,7 +855,7 @@ func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T)
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
@@ -866,7 +867,7 @@ func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T)
 
 	// A different assignee, not the one this item is assigned to, gets
 	// ErrNotFound — same "acts as if it doesn't exist" rule as GetByID.
-	_, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-999", false, ChangeStatusInput{
+	_, err = service.ChangeStatus(context.Background(), item.ID, "user-assignee-999", false, false, ChangeStatusInput{
 		ToStatus: StatusInProgress,
 	})
 	if !errors.Is(err, ErrNotFound) {
@@ -877,7 +878,7 @@ func TestServiceChangeStatusRejectsAssigneeActingOnUnownedWorkItem(t *testing.T)
 func TestServiceListStatusHistoryScopesToOwnWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -886,17 +887,17 @@ func TestServiceListStatusHistoryScopesToOwnWorkItem(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
 	}
 
-	if _, err := service.ListStatusHistory(context.Background(), item.ID, "user-assignee-001", false); err != nil {
+	if _, err := service.ListStatusHistory(context.Background(), item.ID, "user-assignee-001", false, false); err != nil {
 		t.Fatalf("expected assigned user to see history, got error: %v", err)
 	}
 
-	_, err = service.ListStatusHistory(context.Background(), item.ID, "user-assignee-999", false)
+	_, err = service.ListStatusHistory(context.Background(), item.ID, "user-assignee-999", false, false)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not found error for unowned work item history, got %v", err)
 	}
@@ -905,7 +906,7 @@ func TestServiceListStatusHistoryScopesToOwnWorkItem(t *testing.T) {
 func TestServiceGetAssignmentScopesToOwnWorkItem(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()))
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil)
 
 	item, err := service.Create(context.Background(), "user-admin-001", CreateInput{
 		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
@@ -914,18 +915,374 @@ func TestServiceGetAssignmentScopesToOwnWorkItem(t *testing.T) {
 		t.Fatalf("expected create to succeed, got error: %v", err)
 	}
 
-	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", AssignInput{
+	if _, err := service.AssignWorkItem(context.Background(), item.ID, "user-admin-001", false, AssignInput{
 		AssignedToUserID: "user-assignee-001",
 	}); err != nil {
 		t.Fatalf("expected assign to succeed, got error: %v", err)
 	}
 
-	if _, err := service.GetAssignment(context.Background(), item.ID, "user-assignee-001", false); err != nil {
+	if _, err := service.GetAssignment(context.Background(), item.ID, "user-assignee-001", false, false); err != nil {
 		t.Fatalf("expected assigned user to see the assignment, got error: %v", err)
 	}
 
-	_, err = service.GetAssignment(context.Background(), item.ID, "user-assignee-999", false)
+	_, err = service.GetAssignment(context.Background(), item.ID, "user-assignee-999", false, false)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not found error for unowned assignment, got %v", err)
+	}
+}
+
+// --- OPS-045: supervisor + team scoping ---
+
+// newSupervisorTestService wires a real teams.Service in as TeamAuthority
+// (not a hand-rolled mock) — same "construct the real collaborator" choice
+// OPS-041's notification tests made for notifications.Service.
+func newSupervisorTestService(t *testing.T) (Service, teams.Service) {
+	t.Helper()
+
+	teamSvc := teams.NewService(teams.NewMemoryStore(), teams.NewMemoryMembershipStore(), teams.NewMemorySupervisionStore())
+	workSvc := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, teamSvc)
+
+	return workSvc, teamSvc
+}
+
+func TestSupervisorCanRunFullLifecycleForOwnTeam(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, teamSvc := newSupervisorTestService(t)
+
+	team, err := teamSvc.CreateTeam(ctx, "Team A")
+	if err != nil {
+		t.Fatalf("expected team to create, got error: %v", err)
+	}
+	if _, err := teamSvc.AddAssignee(ctx, team.ID, "user-assignee-001", "user-admin-001"); err != nil {
+		t.Fatalf("expected assignee to join team, got error: %v", err)
+	}
+	if _, err := teamSvc.AddSupervisor(ctx, team.ID, "user-supervisor-001", "user-admin-001"); err != nil {
+		t.Fatalf("expected supervisor to be added, got error: %v", err)
+	}
+
+	item, err := service.Create(ctx, "user-supervisor-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(ctx, item.ID, "user-supervisor-001", true, AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected supervisor to assign within own team, got error: %v", err)
+	}
+
+	if _, err := service.RespondToAssignment(ctx, item.ID, "user-assignee-001", true, RespondToAssignmentInput{}); err != nil {
+		t.Fatalf("expected assignee to accept, got error: %v", err)
+	}
+	for _, toStatus := range []Status{StatusInProgress, StatusSubmittedForReview} {
+		if _, err := service.ChangeStatus(ctx, item.ID, "user-assignee-001", false, false, ChangeStatusInput{ToStatus: toStatus}); err != nil {
+			t.Fatalf("expected assignee move to %q to succeed, got error: %v", toStatus, err)
+		}
+	}
+
+	if _, err := service.ChangeStatus(ctx, item.ID, "user-supervisor-001", false, true, ChangeStatusInput{ToStatus: StatusVerified}); err != nil {
+		t.Fatalf("expected supervisor to verify own team's work, got error: %v", err)
+	}
+
+	updated, err := service.ChangeStatus(ctx, item.ID, "user-supervisor-001", false, true, ChangeStatusInput{ToStatus: StatusCompleted})
+	if err != nil {
+		t.Fatalf("expected supervisor to mark own team's work completed, got error: %v", err)
+	}
+
+	if updated.Status != StatusCompleted {
+		t.Fatalf("expected status %q, got %q", StatusCompleted, updated.Status)
+	}
+}
+
+func TestSupervisorCannotAssignOutsideOwnTeam(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, teamSvc := newSupervisorTestService(t)
+
+	teamA, err := teamSvc.CreateTeam(ctx, "Team A")
+	if err != nil {
+		t.Fatalf("expected team A to create, got error: %v", err)
+	}
+	teamB, err := teamSvc.CreateTeam(ctx, "Team B")
+	if err != nil {
+		t.Fatalf("expected team B to create, got error: %v", err)
+	}
+
+	if _, err := teamSvc.AddAssignee(ctx, teamB.ID, "user-assignee-b", "user-admin-001"); err != nil {
+		t.Fatalf("expected assignee to join team B, got error: %v", err)
+	}
+	if _, err := teamSvc.AddSupervisor(ctx, teamA.ID, "user-supervisor-a", "user-admin-001"); err != nil {
+		t.Fatalf("expected supervisor to be added to team A, got error: %v", err)
+	}
+
+	item, err := service.Create(ctx, "user-supervisor-a", CreateInput{
+		Title: "Fence repair", Description: "Fix the east fence", Priority: PriorityLow,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(ctx, item.ID, "user-supervisor-a", true, AssignInput{
+		AssignedToUserID: "user-assignee-b",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected team A's supervisor to be rejected assigning to team B's assignee, got %v", err)
+	}
+}
+
+func TestSupervisorCannotVerifyAnotherTeamsWorkItem(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, teamSvc := newSupervisorTestService(t)
+
+	teamA, err := teamSvc.CreateTeam(ctx, "Team A")
+	if err != nil {
+		t.Fatalf("expected team A to create, got error: %v", err)
+	}
+	teamB, err := teamSvc.CreateTeam(ctx, "Team B")
+	if err != nil {
+		t.Fatalf("expected team B to create, got error: %v", err)
+	}
+
+	if _, err := teamSvc.AddAssignee(ctx, teamB.ID, "user-assignee-b", "user-admin-001"); err != nil {
+		t.Fatalf("expected assignee to join team B, got error: %v", err)
+	}
+	if _, err := teamSvc.AddSupervisor(ctx, teamB.ID, "user-supervisor-b", "user-admin-001"); err != nil {
+		t.Fatalf("expected supervisor B to be added, got error: %v", err)
+	}
+	if _, err := teamSvc.AddSupervisor(ctx, teamA.ID, "user-supervisor-a", "user-admin-001"); err != nil {
+		t.Fatalf("expected supervisor A to be added, got error: %v", err)
+	}
+
+	item, err := service.Create(ctx, "user-supervisor-b", CreateInput{
+		Title: "Fence repair", Description: "Fix the east fence", Priority: PriorityLow,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(ctx, item.ID, "user-supervisor-b", true, AssignInput{
+		AssignedToUserID: "user-assignee-b",
+	}); err != nil {
+		t.Fatalf("expected team B's supervisor to assign within own team, got error: %v", err)
+	}
+
+	if _, err := service.RespondToAssignment(ctx, item.ID, "user-assignee-b", true, RespondToAssignmentInput{}); err != nil {
+		t.Fatalf("expected assignee to accept, got error: %v", err)
+	}
+	for _, toStatus := range []Status{StatusInProgress, StatusSubmittedForReview} {
+		if _, err := service.ChangeStatus(ctx, item.ID, "user-assignee-b", false, false, ChangeStatusInput{ToStatus: toStatus}); err != nil {
+			t.Fatalf("expected assignee move to %q to succeed, got error: %v", toStatus, err)
+		}
+	}
+
+	_, err = service.ChangeStatus(ctx, item.ID, "user-supervisor-a", false, true, ChangeStatusInput{ToStatus: StatusVerified})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected team A's supervisor to be rejected verifying team B's work, got %v", err)
+	}
+}
+
+func TestAdminRetainsGlobalAuthorityAcrossAllTeams(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, teamSvc := newSupervisorTestService(t)
+
+	team, err := teamSvc.CreateTeam(ctx, "Team A")
+	if err != nil {
+		t.Fatalf("expected team to create, got error: %v", err)
+	}
+	if _, err := teamSvc.AddAssignee(ctx, team.ID, "user-assignee-001", "user-admin-001"); err != nil {
+		t.Fatalf("expected assignee to join team, got error: %v", err)
+	}
+	// Deliberately no supervisor added to this team — admin should still
+	// be able to act on it, unaffected by team structure. This is the
+	// "both supervisors unavailable" edge case resolved architecturally:
+	// admin is a standing fallback, not a special-cased one.
+
+	item, err := service.Create(ctx, "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(ctx, item.ID, "user-admin-001", false, AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected admin to assign despite no team supervisor, got error: %v", err)
+	}
+
+	if _, err := service.RespondToAssignment(ctx, item.ID, "user-assignee-001", true, RespondToAssignmentInput{}); err != nil {
+		t.Fatalf("expected assignee to accept, got error: %v", err)
+	}
+	for _, toStatus := range []Status{StatusInProgress, StatusSubmittedForReview} {
+		if _, err := service.ChangeStatus(ctx, item.ID, "user-assignee-001", false, false, ChangeStatusInput{ToStatus: toStatus}); err != nil {
+			t.Fatalf("expected assignee move to %q to succeed, got error: %v", toStatus, err)
+		}
+	}
+
+	if _, err := service.ChangeStatus(ctx, item.ID, "user-admin-001", true, false, ChangeStatusInput{ToStatus: StatusVerified}); err != nil {
+		t.Fatalf("expected admin to verify despite no team supervisor, got error: %v", err)
+	}
+}
+
+func TestSupervisorListSeesOnlyOwnTeamWork(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, teamSvc := newSupervisorTestService(t)
+
+	teamA, err := teamSvc.CreateTeam(ctx, "Team A")
+	if err != nil {
+		t.Fatalf("expected team A to create, got error: %v", err)
+	}
+	teamB, err := teamSvc.CreateTeam(ctx, "Team B")
+	if err != nil {
+		t.Fatalf("expected team B to create, got error: %v", err)
+	}
+
+	if _, err := teamSvc.AddAssignee(ctx, teamA.ID, "user-assignee-a", "user-admin-001"); err != nil {
+		t.Fatalf("expected assignee to join team A, got error: %v", err)
+	}
+	if _, err := teamSvc.AddAssignee(ctx, teamB.ID, "user-assignee-b", "user-admin-001"); err != nil {
+		t.Fatalf("expected assignee to join team B, got error: %v", err)
+	}
+	if _, err := teamSvc.AddSupervisor(ctx, teamA.ID, "user-supervisor-a", "user-admin-001"); err != nil {
+		t.Fatalf("expected supervisor to be added to team A, got error: %v", err)
+	}
+
+	itemA, err := service.Create(ctx, "user-supervisor-a", CreateInput{
+		Title: "Team A task", Description: "Belongs to team A", Priority: PriorityLow,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+	if _, err := service.AssignWorkItem(ctx, itemA.ID, "user-supervisor-a", true, AssignInput{
+		AssignedToUserID: "user-assignee-a",
+	}); err != nil {
+		t.Fatalf("expected assign within team A to succeed, got error: %v", err)
+	}
+
+	itemB, err := service.Create(ctx, "user-admin-001", CreateInput{
+		Title: "Team B task", Description: "Belongs to team B", Priority: PriorityLow,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+	if _, err := service.AssignWorkItem(ctx, itemB.ID, "user-admin-001", false, AssignInput{
+		AssignedToUserID: "user-assignee-b",
+	}); err != nil {
+		t.Fatalf("expected assign within team B to succeed, got error: %v", err)
+	}
+
+	visible, err := service.List(ctx, "user-supervisor-a", false, true)
+	if err != nil {
+		t.Fatalf("expected list to succeed, got error: %v", err)
+	}
+
+	if len(visible) != 1 || visible[0].ID != itemA.ID {
+		t.Fatalf("expected supervisor to see only team A's work item, got %+v", visible)
+	}
+}
+
+// TestSupervisorCannotAdoptAnotherUsersUnassignedWorkItem closes a real gap
+// a review caught on PR #52: the original AssignWorkItem check only
+// verified the *destination* assignee was on the caller's team, never that
+// the caller had any authority over the work item itself. That let a
+// supervisor "adopt" an admin's (or another supervisor's) hidden,
+// not-yet-assigned item just by knowing its id and pointing it at their own
+// team, even though List/GetByID correctly hid it from them beforehand.
+func TestSupervisorCannotAdoptAnotherUsersUnassignedWorkItem(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, teamSvc := newSupervisorTestService(t)
+
+	team, err := teamSvc.CreateTeam(ctx, "Team A")
+	if err != nil {
+		t.Fatalf("expected team to create, got error: %v", err)
+	}
+	if _, err := teamSvc.AddAssignee(ctx, team.ID, "user-assignee-001", "user-admin-001"); err != nil {
+		t.Fatalf("expected assignee to join team, got error: %v", err)
+	}
+	if _, err := teamSvc.AddSupervisor(ctx, team.ID, "user-supervisor-001", "user-admin-001"); err != nil {
+		t.Fatalf("expected supervisor to be added, got error: %v", err)
+	}
+
+	// Admin creates a work item — the supervisor above has no authority
+	// over it (they didn't create it, and it isn't assigned to anyone on
+	// their team yet).
+	item, err := service.Create(ctx, "user-admin-001", CreateInput{
+		Title: "Admin's own task", Description: "Not the supervisor's to give away", Priority: PriorityLow,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	_, err = service.AssignWorkItem(ctx, item.ID, "user-supervisor-001", true, AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected supervisor to be rejected assigning an item they have no authority over, got %v", err)
+	}
+}
+
+func TestChangeStatusToFlaggedRequiresFeedbackRegardlessOfEntryPoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service := NewService(NewMemoryStore(), NewMemoryStatusHistoryStore(), NewMemoryAssignmentStore(), NewMemoryAssignmentHistoryStore(), nil, nil)
+
+	item, err := service.Create(ctx, "user-admin-001", CreateInput{
+		Title: "Gate repaint", Description: "Repaint the gate", Priority: PriorityMedium,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	if _, err := service.AssignWorkItem(ctx, item.ID, "user-admin-001", false, AssignInput{
+		AssignedToUserID: "user-assignee-001",
+	}); err != nil {
+		t.Fatalf("expected assign to succeed, got error: %v", err)
+	}
+	if _, err := service.RespondToAssignment(ctx, item.ID, "user-assignee-001", true, RespondToAssignmentInput{}); err != nil {
+		t.Fatalf("expected accept to succeed, got error: %v", err)
+	}
+	if _, err := service.ChangeStatus(ctx, item.ID, "user-assignee-001", false, false, ChangeStatusInput{ToStatus: StatusInProgress}); err != nil {
+		t.Fatalf("expected start work to succeed, got error: %v", err)
+	}
+	if _, err := service.ChangeStatus(ctx, item.ID, "user-assignee-001", false, false, ChangeStatusInput{ToStatus: StatusSubmittedForReview}); err != nil {
+		t.Fatalf("expected submit for review to succeed, got error: %v", err)
+	}
+
+	// Even an admin, going through the generic ChangeStatus entry point
+	// (not the dedicated POST .../flag route, which validates this
+	// itself before ever calling ChangeStatus), cannot flag with no
+	// reason and no note.
+	_, err = service.ChangeStatus(ctx, item.ID, "user-admin-001", true, false, ChangeStatusInput{ToStatus: StatusFlagged})
+	if !errors.Is(err, ErrFeedbackRequired) {
+		t.Fatalf("expected feedback-required error flagging with no reason, got %v", err)
+	}
+
+	whitespace := "   "
+	_, err = service.ChangeStatus(ctx, item.ID, "user-admin-001", true, false, ChangeStatusInput{ToStatus: StatusFlagged, Reason: &whitespace})
+	if !errors.Is(err, ErrFeedbackRequired) {
+		t.Fatalf("expected feedback-required error flagging with whitespace-only reason, got %v", err)
+	}
+
+	reason := "retake the photo"
+	updated, err := service.ChangeStatus(ctx, item.ID, "user-admin-001", true, false, ChangeStatusInput{ToStatus: StatusFlagged, Reason: &reason})
+	if err != nil {
+		t.Fatalf("expected flag with a real reason to succeed, got error: %v", err)
+	}
+	if updated.Status != StatusFlagged {
+		t.Fatalf("expected status %q, got %q", StatusFlagged, updated.Status)
 	}
 }

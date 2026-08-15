@@ -1271,6 +1271,189 @@ func TestSubmitForReviewOnUnownedWorkItemStaysNotFound(t *testing.T) {
 	}
 }
 
+// TestSupervisorCanRunFullLifecycleThroughRealHTTPHandlers is OPS-045's
+// router-level coverage — the service-layer tests in
+// internal/workitems/service_test.go already prove the authorization logic
+// itself, but nothing previously exercised a supervisor caller through the
+// actual HTTP routes, role middleware, and JSON request/response shapes the
+// way other roles' router tests do. Also closes a real gap a review caught
+// on PR #52: the attachment routes hadn't been opened to RoleSupervisor,
+// so a supervisor could never inspect a team member's evidence before
+// verifying or flagging it even though the handler itself was already
+// team-scope aware.
+func TestSupervisorCanRunFullLifecycleThroughRealHTTPHandlers(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	supervisorToken := loginAndReturnToken(t, handler, "supervisor@ops.local", "ChangeMe123!")
+	assigneeToken := loginAndReturnToken(t, handler, "assignee@ops.local", "ChangeMe123!")
+
+	teamBody := bytes.NewBufferString(`{"name":"Facilities Crew A"}`)
+	teamReq := httptest.NewRequest(http.MethodPost, "/teams", teamBody)
+	teamReq.Header.Set("Authorization", "Bearer "+adminToken)
+	teamReq.Header.Set("Content-Type", "application/json")
+	teamRec := httptest.NewRecorder()
+	handler.ServeHTTP(teamRec, teamReq)
+
+	if teamRec.Code != http.StatusCreated {
+		t.Fatalf("expected team create status %d, got %d: %s", http.StatusCreated, teamRec.Code, teamRec.Body.String())
+	}
+
+	var team struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(teamRec.Body).Decode(&team); err != nil {
+		t.Fatalf("expected team response to decode, got error: %v", err)
+	}
+
+	for _, req := range []struct {
+		path   string
+		userID string
+	}{
+		{"/teams/" + team.ID + "/assignees", "user-assignee-001"},
+		{"/teams/" + team.ID + "/supervisors", "user-supervisor-001"},
+	} {
+		body := bytes.NewBufferString(`{"userId":"` + req.userID + `"}`)
+		httpReq := httptest.NewRequest(http.MethodPost, req.path, body)
+		httpReq.Header.Set("Authorization", "Bearer "+adminToken)
+		httpReq.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httpReq)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected %s status %d, got %d: %s", req.path, http.StatusCreated, rec.Code, rec.Body.String())
+		}
+	}
+
+	createBody := bytes.NewBufferString(`{"title":"Gate repaint","description":"Repaint the estate gate","priority":"high"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workitems", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var item struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&item); err != nil {
+		t.Fatalf("expected create response to decode, got error: %v", err)
+	}
+
+	assignBody := bytes.NewBufferString(`{"assignedToUserId":"user-assignee-001"}`)
+	assignReq := httptest.NewRequest(http.MethodPost, "/workitems/"+item.ID+"/assignment", assignBody)
+	assignReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	assignReq.Header.Set("Content-Type", "application/json")
+	assignRec := httptest.NewRecorder()
+	handler.ServeHTTP(assignRec, assignReq)
+
+	if assignRec.Code != http.StatusCreated {
+		t.Fatalf("expected assign status %d, got %d: %s", http.StatusCreated, assignRec.Code, assignRec.Body.String())
+	}
+
+	acceptReq := httptest.NewRequest(http.MethodPost, "/workitems/"+item.ID+"/assignment/accept", bytes.NewBufferString(`{}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	acceptReq.Header.Set("Content-Type", "application/json")
+	acceptRec := httptest.NewRecorder()
+	handler.ServeHTTP(acceptRec, acceptReq)
+
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept status %d, got %d: %s", http.StatusOK, acceptRec.Code, acceptRec.Body.String())
+	}
+
+	startReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+item.ID+"/status", bytes.NewBufferString(`{"toStatus":"in_progress"}`))
+	startReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	handler.ServeHTTP(startRec, startReq)
+
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected start-work status %d, got %d: %s", http.StatusOK, startRec.Code, startRec.Body.String())
+	}
+
+	uploadBody, contentType := newMultipartUploadBody(t, "site.jpg", "evidence_photo", "fake photo bytes")
+	uploadReq := httptest.NewRequest(http.MethodPost, "/workitems/"+item.ID+"/attachments", uploadBody)
+	uploadReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	uploadReq.Header.Set("Content-Type", contentType)
+	uploadRec := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRec, uploadReq)
+
+	if uploadRec.Code != http.StatusCreated {
+		t.Fatalf("expected upload status %d, got %d: %s", http.StatusCreated, uploadRec.Code, uploadRec.Body.String())
+	}
+
+	// The supervisor can list the evidence before deciding to verify or
+	// flag it — this is the gap a review caught: the route wasn't open
+	// to RoleSupervisor even though the handler itself already knew how
+	// to scope a supervisor's access correctly.
+	listAttachmentsReq := httptest.NewRequest(http.MethodGet, "/workitems/"+item.ID+"/attachments", nil)
+	listAttachmentsReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	listAttachmentsRec := httptest.NewRecorder()
+	handler.ServeHTTP(listAttachmentsRec, listAttachmentsReq)
+
+	if listAttachmentsRec.Code != http.StatusOK {
+		t.Fatalf("expected supervisor attachment list status %d, got %d: %s", http.StatusOK, listAttachmentsRec.Code, listAttachmentsRec.Body.String())
+	}
+
+	submitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+item.ID+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
+	submitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitRec := httptest.NewRecorder()
+	handler.ServeHTTP(submitRec, submitReq)
+
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("expected submit status %d, got %d: %s", http.StatusOK, submitRec.Code, submitRec.Body.String())
+	}
+
+	// An assignee (wrong role entirely) is rejected by middleware before
+	// ever reaching the service — confirms the role gate itself, not just
+	// the team-scoping logic behind it.
+	assigneeVerifyReq := httptest.NewRequest(http.MethodPost, "/workitems/"+item.ID+"/verify", bytes.NewBufferString(`{}`))
+	assigneeVerifyReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	assigneeVerifyReq.Header.Set("Content-Type", "application/json")
+	assigneeVerifyRec := httptest.NewRecorder()
+	handler.ServeHTTP(assigneeVerifyRec, assigneeVerifyReq)
+
+	if assigneeVerifyRec.Code != http.StatusForbidden {
+		t.Fatalf("expected assignee verify attempt status %d, got %d: %s", http.StatusForbidden, assigneeVerifyRec.Code, assigneeVerifyRec.Body.String())
+	}
+
+	verifyReq := httptest.NewRequest(http.MethodPost, "/workitems/"+item.ID+"/verify", bytes.NewBufferString(`{"note":"looks good"}`))
+	verifyReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyRec := httptest.NewRecorder()
+	handler.ServeHTTP(verifyRec, verifyReq)
+
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("expected supervisor verify status %d, got %d: %s", http.StatusOK, verifyRec.Code, verifyRec.Body.String())
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+item.ID+"/status", bytes.NewBufferString(`{"toStatus":"completed"}`))
+	completeReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	completeReq.Header.Set("Content-Type", "application/json")
+	completeRec := httptest.NewRecorder()
+	handler.ServeHTTP(completeRec, completeReq)
+
+	if completeRec.Code != http.StatusOK {
+		t.Fatalf("expected supervisor complete status %d, got %d: %s", http.StatusOK, completeRec.Code, completeRec.Body.String())
+	}
+
+	var completed struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(completeRec.Body).Decode(&completed); err != nil {
+		t.Fatalf("expected complete response to decode, got error: %v", err)
+	}
+
+	if completed.Status != "completed" {
+		t.Fatalf("expected status %q, got %q", "completed", completed.Status)
+	}
+}
+
 // newMultipartUploadBody builds a real multipart/form-data request body
 // with a "file" field and a "kind" field, the same shape a browser or
 // Postman would send. Returns the body plus the Content-Type header value
@@ -1305,17 +1488,20 @@ func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
 	handler, err := New(config.Config{
-		Port:                         "8080",
-		AppEnv:                       "test",
-		AuthTokenSecret:              "test-secret",
-		AuthTokenTTL:                 time.Hour,
-		BootstrapAdminIdentifier:     "admin@ops.local",
-		BootstrapAdminPassword:       "ChangeMe123!",
-		BootstrapAdminDisplayName:    "Platform Admin",
-		BootstrapAssigneeIdentifier:  "assignee@ops.local",
-		BootstrapAssigneePassword:    "ChangeMe123!",
-		BootstrapAssigneeDisplayName: "Assigned Worker",
-		AttachmentUploadDir:          t.TempDir(),
+		Port:                           "8080",
+		AppEnv:                         "test",
+		AuthTokenSecret:                "test-secret",
+		AuthTokenTTL:                   time.Hour,
+		BootstrapAdminIdentifier:       "admin@ops.local",
+		BootstrapAdminPassword:         "ChangeMe123!",
+		BootstrapAdminDisplayName:      "Platform Admin",
+		BootstrapAssigneeIdentifier:    "assignee@ops.local",
+		BootstrapAssigneePassword:      "ChangeMe123!",
+		BootstrapAssigneeDisplayName:   "Assigned Worker",
+		BootstrapSupervisorIdentifier:  "supervisor@ops.local",
+		BootstrapSupervisorPassword:    "ChangeMe123!",
+		BootstrapSupervisorDisplayName: "Team Supervisor",
+		AttachmentUploadDir:            t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("expected router to be created, got error: %v", err)

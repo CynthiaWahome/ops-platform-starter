@@ -43,7 +43,7 @@ func (h AttachmentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 
 	workItemID := r.PathValue("id")
 
-	if _, err := h.workItemService.GetByID(r.Context(), workItemID, principal.UserID, principal.HasRole(auth.RoleAdmin)); err != nil {
+	if _, err := h.workItemService.GetByID(r.Context(), workItemID, principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor)); err != nil {
 		writeWorkItemAccessError(w, err)
 		return
 	}
@@ -97,7 +97,7 @@ func (h AttachmentHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	workItemID := r.PathValue("id")
 
-	if _, err := h.workItemService.GetByID(r.Context(), workItemID, principal.UserID, principal.HasRole(auth.RoleAdmin)); err != nil {
+	if _, err := h.workItemService.GetByID(r.Context(), workItemID, principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor)); err != nil {
 		writeWorkItemAccessError(w, err)
 		return
 	}

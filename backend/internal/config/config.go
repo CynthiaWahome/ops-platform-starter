@@ -7,17 +7,20 @@ import (
 )
 
 type Config struct {
-	Port                         string
-	AppEnv                       string
-	AuthTokenSecret              string
-	AuthTokenTTL                 time.Duration
-	BootstrapAdminIdentifier     string
-	BootstrapAdminPassword       string
-	BootstrapAdminDisplayName    string
-	BootstrapAssigneeIdentifier  string
-	BootstrapAssigneePassword    string
-	BootstrapAssigneeDisplayName string
-	AttachmentUploadDir          string
+	Port                           string
+	AppEnv                         string
+	AuthTokenSecret                string
+	AuthTokenTTL                   time.Duration
+	BootstrapAdminIdentifier       string
+	BootstrapAdminPassword         string
+	BootstrapAdminDisplayName      string
+	BootstrapAssigneeIdentifier    string
+	BootstrapAssigneePassword      string
+	BootstrapAssigneeDisplayName   string
+	BootstrapSupervisorIdentifier  string
+	BootstrapSupervisorPassword    string
+	BootstrapSupervisorDisplayName string
+	AttachmentUploadDir            string
 }
 
 func Load() Config {
@@ -34,6 +37,12 @@ func Load() Config {
 		BootstrapAssigneeDisplayName: getEnv(
 			"BOOTSTRAP_ASSIGNEE_DISPLAY_NAME",
 			"Assigned Worker",
+		),
+		BootstrapSupervisorIdentifier: getEnv("BOOTSTRAP_SUPERVISOR_IDENTIFIER", "supervisor@ops.local"),
+		BootstrapSupervisorPassword:   getEnv("BOOTSTRAP_SUPERVISOR_PASSWORD", "ChangeMe123!"),
+		BootstrapSupervisorDisplayName: getEnv(
+			"BOOTSTRAP_SUPERVISOR_DISPLAY_NAME",
+			"Team Supervisor",
 		),
 		AttachmentUploadDir: getEnv("ATTACHMENT_UPLOAD_DIR", "uploads"),
 	}

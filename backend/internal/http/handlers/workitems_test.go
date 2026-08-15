@@ -18,7 +18,7 @@ import (
 func TestWorkItemHandlerCreateReturnsCreatedItem(t *testing.T) {
 	t.Parallel()
 
-	service := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore(), workitems.NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore())).WithClock(func() time.Time {
+	service := workitems.NewService(workitems.NewMemoryStore(), workitems.NewMemoryStatusHistoryStore(), workitems.NewMemoryAssignmentStore(), workitems.NewMemoryAssignmentHistoryStore(), notifications.NewService(notifications.NewMemoryStore()), nil).WithClock(func() time.Time {
 		return time.Date(2026, time.July, 31, 18, 15, 0, 0, time.UTC)
 	})
 	attachmentStorage, err := attachments.NewLocalDiskStorage(t.TempDir())

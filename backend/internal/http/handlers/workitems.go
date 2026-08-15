@@ -63,7 +63,7 @@ func (h WorkItemHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.service.List(r.Context(), principal.UserID, principal.HasRole(auth.RoleAdmin))
+	items, err := h.service.List(r.Context(), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):
@@ -85,7 +85,7 @@ func (h WorkItemHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.GetByID(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
+	item, err := h.service.GetByID(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):
@@ -143,6 +143,7 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 
 	workItemID := r.PathValue("id")
 	callerIsAdmin := principal.HasRole(auth.RoleAdmin)
+	callerIsSupervisor := principal.HasRole(auth.RoleSupervisor)
 
 	// Explicit evidence submission (OPS-031): moving into
 	// StatusSubmittedForReview requires at least one attachment already
@@ -151,7 +152,7 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 	// asking attachmentService anything — a caller who cannot see this
 	// work item never learns whether it has attachments.
 	if input.ToStatus == workitems.StatusSubmittedForReview {
-		if _, err := h.service.GetByID(r.Context(), workItemID, principal.UserID, callerIsAdmin); err != nil {
+		if _, err := h.service.GetByID(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor); err != nil {
 			writeWorkItemAccessError(w, err)
 			return
 		}
@@ -168,12 +169,13 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), workItemID, principal.UserID, callerIsAdmin, input)
+	item, err := h.service.ChangeStatus(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor, input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput),
 			errors.Is(err, workitems.ErrInvalidStatus),
-			errors.Is(err, workitems.ErrInvalidTransition):
+			errors.Is(err, workitems.ErrInvalidTransition),
+			errors.Is(err, workitems.ErrFeedbackRequired):
 			writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
 		case errors.Is(err, workitems.ErrNotFound):
 			writeJSON(w, http.StatusNotFound, errorResponse{Message: "work item not found"})
@@ -189,12 +191,15 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 
 // Verify is a purpose-built front door onto ChangeStatus for the one
 // transition OPS-032 cares about: SubmittedForReview -> Verified. The
-// route this is wired to (POST /workitems/{id}/verify) is registered
-// admin-only, so unlike the generic PATCH /workitems/{id}/status endpoint
-// — where a non-admin caller reaches the service layer and gets rejected
-// there as an invalid transition (400) — an assignee hitting this route
-// never gets past the middleware (403). Same underlying state machine,
-// tighter, more honest error for the wrong-role case.
+// route this is wired to (POST /workitems/{id}/verify) is registered for
+// admin and supervisor (OPS-045: a supervisor may verify their own team's
+// work), so unlike the generic PATCH /workitems/{id}/status endpoint — where
+// a wrong-role caller reaches the service layer and gets rejected there as
+// an invalid transition (400) — an assignee hitting this route never gets
+// past the middleware (403). Same underlying state machine, tighter, more
+// honest error for the wrong-role case. A supervisor who clears the role
+// check but targets another team's work item still gets rejected, at the
+// service layer, by supervisorMayActOn.
 func (h WorkItemHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	var input workitems.VerifyInput
 
@@ -209,7 +214,7 @@ func (h WorkItemHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), workitems.ChangeStatusInput{
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), workitems.ChangeStatusInput{
 		ToStatus: workitems.StatusVerified,
 		Reason:   input.Note,
 	})
@@ -229,13 +234,13 @@ func (h WorkItemHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-// Flag is Verify's sibling for the rejection path: a purpose-built,
-// admin-only front door onto SubmittedForReview -> Flagged. Unlike
-// Verify, the feedback note is mandatory — flagging without saying why
-// leaves the assignee stuck, so this handler rejects an empty note
-// before it ever reaches ChangeStatus, the same "check the business rule
-// before touching the service" layering OPS-031 established for the
-// evidence-required check.
+// Flag is Verify's sibling for the rejection path: a purpose-built front
+// door onto SubmittedForReview -> Flagged, open to admin and supervisor
+// the same way Verify is. Unlike Verify, the feedback note is mandatory —
+// flagging without saying why leaves the assignee stuck, so this handler
+// rejects an empty note before it ever reaches ChangeStatus, the same
+// "check the business rule before touching the service" layering OPS-031
+// established for the evidence-required check.
 func (h WorkItemHandler) Flag(w http.ResponseWriter, r *http.Request) {
 	var input workitems.FlagInput
 
@@ -256,7 +261,7 @@ func (h WorkItemHandler) Flag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), workitems.ChangeStatusInput{
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), workitems.ChangeStatusInput{
 		ToStatus: workitems.StatusFlagged,
 		Reason:   &note,
 	})
@@ -283,7 +288,7 @@ func (h WorkItemHandler) ListStatusHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	history, err := h.service.ListStatusHistory(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
+	history, err := h.service.ListStatusHistory(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):
@@ -310,7 +315,7 @@ func (h WorkItemHandler) ListAssignmentHistory(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	history, err := h.service.ListAssignmentHistory(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
+	history, err := h.service.ListAssignmentHistory(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):
@@ -341,7 +346,7 @@ func (h WorkItemHandler) Assign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assignment, err := h.service.AssignWorkItem(r.Context(), r.PathValue("id"), principal.UserID, input)
+	assignment, err := h.service.AssignWorkItem(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleSupervisor), input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
@@ -365,7 +370,7 @@ func (h WorkItemHandler) GetAssignment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assignment, err := h.service.GetAssignment(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin))
+	assignment, err := h.service.GetAssignment(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):

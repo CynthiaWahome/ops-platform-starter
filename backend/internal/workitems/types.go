@@ -15,6 +15,7 @@ var (
 	ErrAssignmentNotFound   = errors.New("assignment not found")
 	ErrAssignmentNotOwned   = errors.New("assignment does not belong to this user")
 	ErrAssignmentNotPending = errors.New("assignment has already been responded to")
+	ErrFeedbackRequired     = errors.New("feedback note is required when flagging a work item")
 )
 
 type Status string
