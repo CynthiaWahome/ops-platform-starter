@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/db"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/db"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
 )
 
 type contextKey string

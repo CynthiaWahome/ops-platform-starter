@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/server"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/server"
 )
 
 func main() {

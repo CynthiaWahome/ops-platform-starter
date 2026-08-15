@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/router"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/http/router"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

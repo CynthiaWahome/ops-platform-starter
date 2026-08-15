@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/attachments"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/workitems"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/attachments"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/http/middleware"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/workitems"
 )
 
 // maxUploadMemory is how many bytes of a multipart upload Go buffers in

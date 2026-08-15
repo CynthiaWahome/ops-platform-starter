@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
 )
 
 func RequireRoles(next http.Handler, allowedRoles ...auth.Role) http.Handler {

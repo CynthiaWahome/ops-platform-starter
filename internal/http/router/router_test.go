@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
 )
 
 func TestAdminProbeAllowsAdminAndRejectsAssignee(t *testing.T) {

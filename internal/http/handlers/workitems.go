@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/attachments"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/http/middleware"
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/workitems"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/attachments"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/http/middleware"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/workitems"
 )
 
 type WorkItemHandler struct {

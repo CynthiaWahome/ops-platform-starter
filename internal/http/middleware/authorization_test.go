@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/auth"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
 )
 
 func TestRequireRolesRejectsMissingPrincipal(t *testing.T) {

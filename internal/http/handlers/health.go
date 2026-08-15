@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
 )
 
 type HealthHandler struct {

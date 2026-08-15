@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/CynthiaWahome/ops-platform-starter/backend/internal/config"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
 )
 
 func TestHealthHandlerReturnsOK(t *testing.T) {
