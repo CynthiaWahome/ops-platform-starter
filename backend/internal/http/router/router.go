@@ -131,21 +131,21 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		"POST /workitems",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Create), auth.RoleAdmin, auth.RoleSupervisor),
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Create), auth.RoleAdmin, auth.RoleSupervisor, auth.RoleRequester),
 		),
 	)
 	mux.Handle(
 		"GET /workitems",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.List), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.List), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor, auth.RoleRequester),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetByID), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetByID), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor, auth.RoleRequester),
 		),
 	)
 	mux.Handle(

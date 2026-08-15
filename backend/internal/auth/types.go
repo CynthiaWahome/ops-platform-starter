@@ -17,6 +17,12 @@ const (
 	RoleAdmin      Role = "admin"
 	RoleAssignee   Role = "assignee"
 	RoleSupervisor Role = "supervisor"
+	// RoleRequester is the external, low-trust customer role restored in
+	// OPS-047 — create a work item, track its own status, nothing else.
+	// Not to be confused with the pre-OPS-045 "requester" that got
+	// renamed to RoleSupervisor; this is a genuinely new, narrower role,
+	// not a revival of the old one.
+	RoleRequester Role = "requester"
 )
 
 type User struct {

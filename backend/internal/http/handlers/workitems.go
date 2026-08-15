@@ -63,7 +63,7 @@ func (h WorkItemHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.service.List(r.Context(), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor))
+	items, err := h.service.List(r.Context(), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), principal.HasRole(auth.RoleRequester))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):
@@ -85,7 +85,7 @@ func (h WorkItemHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.GetByID(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor))
+	item, err := h.service.GetByID(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), principal.HasRole(auth.RoleRequester))
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput):
@@ -158,7 +158,7 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 	// asking attachmentService anything — a caller who cannot see this
 	// work item never learns whether it has attachments.
 	if input.ToStatus == workitems.StatusSubmittedForReview {
-		if _, err := h.service.GetByID(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor); err != nil {
+		if _, err := h.service.GetByID(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor, false); err != nil {
 			writeWorkItemAccessError(w, err)
 			return
 		}
@@ -175,7 +175,7 @@ func (h WorkItemHandler) ChangeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor, input)
+	item, err := h.service.ChangeStatus(r.Context(), workItemID, principal.UserID, callerIsAdmin, callerIsSupervisor, principal.HasRole(auth.RoleRequester), input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput),
@@ -220,7 +220,7 @@ func (h WorkItemHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), workitems.ChangeStatusInput{
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), principal.HasRole(auth.RoleRequester), workitems.ChangeStatusInput{
 		ToStatus: workitems.StatusVerified,
 		Reason:   input.Note,
 	})
@@ -267,7 +267,7 @@ func (h WorkItemHandler) Flag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), workitems.ChangeStatusInput{
+	item, err := h.service.ChangeStatus(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), principal.HasRole(auth.RoleRequester), workitems.ChangeStatusInput{
 		ToStatus: workitems.StatusFlagged,
 		Reason:   &note,
 	})
@@ -352,7 +352,7 @@ func (h WorkItemHandler) Assign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assignment, err := h.service.AssignWorkItem(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleSupervisor), input)
+	assignment, err := h.service.AssignWorkItem(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleAdmin), principal.HasRole(auth.RoleSupervisor), input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
@@ -420,7 +420,7 @@ func (h WorkItemHandler) respondToAssignment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	assignment, err := h.service.RespondToAssignment(r.Context(), r.PathValue("id"), principal.UserID, accept, input)
+	assignment, err := h.service.RespondToAssignment(r.Context(), r.PathValue("id"), principal.UserID, principal.HasRole(auth.RoleRequester), accept, input)
 	if err != nil {
 		switch {
 		case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrInvalidTransition):
