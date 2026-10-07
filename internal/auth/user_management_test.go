@@ -188,6 +188,60 @@ func TestResetPasswordIssuesNewTempPasswordAndRequiresChangeAgain(t *testing.T) 
 	}
 }
 
+func TestChangePasswordPreservesLeadingAndTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	service := newTestUserManagementService(t)
+
+	user, tempPassword, err := service.CreateUser(context.Background(), "user-admin-001", CreateUserInput{
+		Role:        RoleAssignee,
+		Identifier:  "whitespace-password@ops.local",
+		DisplayName: "Whitespace Password",
+	})
+	if err != nil {
+		t.Fatalf("expected user creation to succeed, got error: %v", err)
+	}
+
+	const chosenPassword = "  has spaces  "
+
+	if err := service.ChangePassword(context.Background(), user.ID, tempPassword, chosenPassword); err != nil {
+		t.Fatalf("expected change password to succeed, got error: %v", err)
+	}
+
+	// A review caught that trimming the new password before hashing it
+	// (while Login never trims what's typed) made a password with
+	// leading/trailing spaces impossible to type back in — this proves
+	// the exact password chosen, whitespace included, logs back in.
+	if _, err := service.Login(context.Background(), "whitespace-password@ops.local", chosenPassword); err != nil {
+		t.Fatalf("expected login with the exact chosen password (including whitespace) to succeed, got error: %v", err)
+	}
+}
+
+func TestChangePasswordRejectsOver72Bytes(t *testing.T) {
+	t.Parallel()
+
+	service := newTestUserManagementService(t)
+
+	user, tempPassword, err := service.CreateUser(context.Background(), "user-admin-001", CreateUserInput{
+		Role:        RoleAssignee,
+		Identifier:  "long-password@ops.local",
+		DisplayName: "Long Password",
+	})
+	if err != nil {
+		t.Fatalf("expected user creation to succeed, got error: %v", err)
+	}
+
+	tooLong := make([]byte, 73)
+	for i := range tooLong {
+		tooLong[i] = 'a'
+	}
+
+	err = service.ChangePassword(context.Background(), user.ID, tempPassword, string(tooLong))
+	if !errors.Is(err, ErrInvalidUserInput) {
+		t.Fatalf("expected ErrInvalidUserInput for a password over 72 bytes, got %v", err)
+	}
+}
+
 func TestUpdateUserDeactivatesAccount(t *testing.T) {
 	t.Parallel()
 

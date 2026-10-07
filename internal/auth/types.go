@@ -66,6 +66,16 @@ type Principal struct {
 	RequiresPasswordChange bool `json:"requiresPasswordChange"`
 }
 
+func (u User) HasRole(role Role) bool {
+	for _, assignedRole := range u.Roles {
+		if assignedRole == role {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (p Principal) HasRole(role Role) bool {
 	for _, assignedRole := range p.Roles {
 		if assignedRole == role {

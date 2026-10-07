@@ -147,6 +147,18 @@ func (s Service) CreateUser(ctx context.Context, actingUserID string, input Crea
 	return created, tempPassword, nil
 }
 
+// GetUser looks up a single account by ID — used by callers (e.g.
+// handlers.UsersHandler.ResetPassword) that need to inspect a user's
+// current role before acting on it, not just its ID.
+func (s Service) GetUser(ctx context.Context, userID string) (User, error) {
+	user, ok := s.users.FindByID(ctx, userID)
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+
+	return user, nil
+}
+
 // ListUsers returns every account, unfiltered. Role/team scoping (admin
 // sees all, supervisor sees only their own team) is applied by the caller
 // (handlers.UsersHandler) via teams.Service — same reason as
@@ -228,12 +240,22 @@ func (s Service) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		return ErrInvalidCredentials
 	}
 
-	trimmedNew := strings.TrimSpace(newPassword)
-	if len(trimmedNew) < 8 {
+	// Length is checked against the trimmed value (so a string of nothing
+	// but spaces can't pass the >=8 rule), but the password that actually
+	// gets hashed is the raw, untrimmed input — a review caught that
+	// trimming before Hash here, while Login never trims what's typed,
+	// meant a password with leading/trailing spaces could never be typed
+	// back in to match. bcrypt silently truncates past 72 bytes, so that's
+	// rejected explicitly rather than hashing a shorter password than the
+	// one the caller thinks they set.
+	if len(strings.TrimSpace(newPassword)) < 8 {
+		return ErrInvalidUserInput
+	}
+	if len(newPassword) > 72 {
 		return ErrInvalidUserInput
 	}
 
-	passwordHash, err := s.passwords.Hash(trimmedNew)
+	passwordHash, err := s.passwords.Hash(newPassword)
 	if err != nil {
 		return err
 	}

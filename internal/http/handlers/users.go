@@ -62,6 +62,24 @@ func (h UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validated before CreateUser, not after — a review caught that
+	// creating the account first and only then attempting team assignment
+	// left an orphaned account on a bad teamId: requiresPasswordChange
+	// true, with no way to ever recover its temp password (it's returned
+	// exactly once, in the response this handler would have failed to
+	// send).
+	if input.TeamID != nil && *input.TeamID != "" {
+		exists, err := h.teamsService.TeamExists(r.Context(), *input.TeamID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to validate team"})
+			return
+		}
+		if !exists {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: "teamId does not refer to a real team"})
+			return
+		}
+	}
+
 	user, tempPassword, err := h.authService.CreateUser(r.Context(), principal.UserID, auth.CreateUserInput{
 		Role:        role,
 		Identifier:  input.Identifier,
@@ -162,6 +180,18 @@ func (h UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	targetID := r.PathValue("id")
 
 	if !principal.HasRole(auth.RoleAdmin) {
+		// A supervisor may never change a role, full stop — not even to
+		// another non-admin role. Checked before supervisorMayAct, not
+		// after: this closes a real privilege-escalation path a review
+		// caught — promote a supervised assignee to admin via this field,
+		// then call POST /users/:id/reset-password (still permitted,
+		// since team membership isn't tied to auth.Role) to obtain that
+		// now-admin account's temp password.
+		if input.Role != nil {
+			writeJSON(w, http.StatusForbidden, errorResponse{Message: "only admin may change a user's role"})
+			return
+		}
+
 		allowed, err := h.supervisorMayAct(r, principal.UserID, targetID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to update user"})
@@ -208,6 +238,19 @@ func (h UsersHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	targetID := r.PathValue("id")
 
 	if !principal.HasRole(auth.RoleAdmin) {
+		// Defense in depth, same reasoning as Update above: a supervisor
+		// must never be able to reset an admin account's password,
+		// regardless of how that account came to hold the role.
+		target, err := h.authService.GetUser(r.Context(), targetID)
+		if err != nil {
+			writeUserError(w, err)
+			return
+		}
+		if target.HasRole(auth.RoleAdmin) {
+			writeJSON(w, http.StatusForbidden, errorResponse{Message: "insufficient permissions"})
+			return
+		}
+
 		allowed, err := h.supervisorMayAct(r, principal.UserID, targetID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to reset password"})
