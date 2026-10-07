@@ -99,5 +99,5 @@ func newTestAuthService(t *testing.T) auth.Service {
 			return time.Date(2026, time.July, 31, 7, 0, 0, 0, time.UTC)
 		})
 
-	return auth.NewService(users, passwords, tokens)
+	return auth.NewService(users, passwords, tokens, nil)
 }

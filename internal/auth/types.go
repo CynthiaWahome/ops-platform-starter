@@ -21,6 +21,16 @@ var (
 	// an existing local (password) account. Linking the two is a
 	// deliberately separate, later piece of work, not handled here.
 	ErrGoogleEmailAlreadyRegistered = errors.New("an account with this email already exists; log in with your password instead")
+	// ErrInvalidOrExpiredCode backs OPS-068b's OTP verification and
+	// password-reset flows — one error for "wrong code," "expired code,"
+	// and "no code was ever requested," deliberately not distinguished,
+	// so a caller probing for valid identifiers/codes learns nothing from
+	// the response shape.
+	ErrInvalidOrExpiredCode = errors.New("invalid or expired code")
+	// ErrTooManyAttempts backs the rate-limit lockout on both OTP flows —
+	// a 6-digit code is only 1,000,000 possibilities, brute-forceable
+	// without this.
+	ErrTooManyAttempts = errors.New("too many attempts, try again later")
 )
 
 type Role string
@@ -75,6 +85,29 @@ type User struct {
 	// claim — nil for every local account, unique when set.
 	AuthProvider    AuthProvider `json:"authProvider"`
 	GoogleSubjectID *string      `json:"-"`
+	// EmailVerified backs OPS-068b. True immediately for every
+	// admin-created (#67) and Google-authenticated (#68a — Google already
+	// verified that email) account; false on self-service signup until
+	// VerifyEmail succeeds. middleware gates POST /workitems (not login,
+	// not viewing) on this being true for requesters only.
+	EmailVerified bool `json:"emailVerified"`
+	// EmailVerificationCodeHash/ExpiresAt and PasswordResetCodeHash/
+	// ExpiresAt hold a SHA-256 hash of the current OTP (never the raw
+	// code — same reasoning as PasswordHash, though SHA-256 not bcrypt:
+	// these are already-random 6-digit codes, not human-chosen secrets,
+	// so a slow KDF buys nothing). Nil when no code is outstanding or
+	// after one is successfully consumed (single-use).
+	EmailVerificationCodeHash      *string    `json:"-"`
+	EmailVerificationCodeExpiresAt *time.Time `json:"-"`
+	PasswordResetCodeHash          *string    `json:"-"`
+	PasswordResetCodeExpiresAt     *time.Time `json:"-"`
+	// FailedOTPAttempts/OTPLockedUntil rate-limit both OTP flows
+	// (OPS-068b) — shared across verify-email and reset-password since
+	// both are the same underlying weakness (a guessable 6-digit code).
+	// Reset to 0/nil on every successful verification; incremented on
+	// every wrong guess; OTPLockedUntil set once the limit is hit.
+	FailedOTPAttempts int        `json:"-"`
+	OTPLockedUntil    *time.Time `json:"-"`
 }
 
 type Principal struct {
@@ -88,6 +121,10 @@ type Principal struct {
 	// itself, so a password change takes effect immediately without
 	// needing the caller to log in again for a new token.
 	RequiresPasswordChange bool `json:"requiresPasswordChange"`
+	// EmailVerified mirrors User.EmailVerified, refreshed from the live
+	// user record on every authenticated request (see
+	// Service.Authenticate) — same reasoning as RequiresPasswordChange.
+	EmailVerified bool `json:"emailVerified"`
 }
 
 func (u User) HasRole(role Role) bool {

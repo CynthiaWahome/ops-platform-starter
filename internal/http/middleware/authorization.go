@@ -51,3 +51,27 @@ func RequirePasswordChangeCleared(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// RequireVerifiedEmailForRequester enforces OPS-068b's narrower gate:
+// unlike RequirePasswordChangeCleared (blocks nearly everything), this
+// blocks exactly one action — creating a work item — and only for an
+// unverified requester. Every other role passes through untouched
+// regardless of their EmailVerified value (it's only ever meaningful for
+// self-service signup accounts). Applied only to POST /workitems in
+// router.go.
+func RequireVerifiedEmailForRequester(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := PrincipalFromContext(r.Context())
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "authentication required"})
+			return
+		}
+
+		if principal.HasRole(auth.RoleRequester) && !principal.EmailVerified {
+			writeJSON(w, http.StatusForbidden, map[string]string{"message": "verify your email before creating a work item"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}

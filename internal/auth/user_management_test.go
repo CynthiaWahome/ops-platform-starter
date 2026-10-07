@@ -29,7 +29,7 @@ func newTestUserManagementService(t *testing.T) Service {
 
 	tokens := NewJWTManager("test-secret", "ops-platform-starter-backend", time.Hour)
 
-	return NewService(users, passwords, tokens)
+	return NewService(users, passwords, tokens, nil)
 }
 
 func TestCreateUserRequiresPasswordChangeAndReturnsTempPassword(t *testing.T) {

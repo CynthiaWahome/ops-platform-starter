@@ -101,7 +101,22 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		return nil, nil, err
 	}
 
-	authService := auth.NewService(userStore, passwords, tokens)
+	// emailSender stays nil unless an email provider is actually
+	// configured (OPS-068b) — Resend takes priority if both happen to be
+	// set, since RESEND_FROM defaults to a usable value
+	// (onboarding@resend.dev) while SMTP requires real credentials
+	// someone had to deliberately set. A startup-time choice, not a
+	// runtime failover — see SMTPEmailSender's doc comment for why.
+	var emailSender auth.EmailSender
+	emailEnabled := cfg.ResendAPIKey != "" || cfg.SMTPHost != ""
+	switch {
+	case cfg.ResendAPIKey != "":
+		emailSender = auth.NewResendEmailSender(cfg.ResendAPIKey, cfg.ResendFrom)
+	case cfg.SMTPHost != "":
+		emailSender = auth.NewSMTPEmailSender(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+	}
+
+	authService := auth.NewService(userStore, passwords, tokens, emailSender)
 
 	// googleClient stays nil unless Google OAuth is actually configured
 	// (OPS-068a) — the same "absent config means the feature isn't wired
@@ -159,6 +174,20 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 	if googleOAuthEnabled {
 		mux.HandleFunc("GET /auth/google/login", authHandler.GoogleLogin)
 		mux.HandleFunc("GET /auth/google/callback", authHandler.GoogleCallback)
+	}
+
+	// Email/password requester signup (OPS-068b) — additive alongside
+	// both the password login above and Google OAuth above, which stay
+	// untouched. Only mounted when an email provider is actually
+	// configured, same pattern as Google OAuth. verify-email requires a
+	// session (SignUp already returns one); forgot/reset-password are
+	// unauthenticated by design — a password reset is exactly the flow
+	// for someone who can't necessarily log in right now.
+	if emailEnabled {
+		mux.HandleFunc("POST /auth/signup", authHandler.SignUp)
+		mux.Handle("POST /auth/verify-email", httpmiddleware.RequireAuth(authService, http.HandlerFunc(authHandler.VerifyEmail)))
+		mux.HandleFunc("POST /auth/forgot-password", authHandler.ForgotPassword)
+		mux.HandleFunc("POST /auth/reset-password", authHandler.ResetPassword)
 	}
 
 	mux.Handle(
@@ -221,7 +250,9 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		httpmiddleware.RequireAuth(
 			authService,
 			httpmiddleware.RequirePasswordChangeCleared(
-				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Create), auth.RoleAdmin, auth.RoleSupervisor, auth.RoleRequester),
+				httpmiddleware.RequireVerifiedEmailForRequester(
+					httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Create), auth.RoleAdmin, auth.RoleSupervisor, auth.RoleRequester),
+				),
 			),
 		),
 	)

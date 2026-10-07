@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 )
 
 // UserStore is the persistence seam for user accounts. MemoryUserStore and
@@ -36,13 +38,22 @@ type Service struct {
 	users     UserStore
 	passwords PasswordManager
 	tokens    TokenManager
+	// email is nil unless an EmailSender was actually configured
+	// (OPS-068b) — SignUp, RequestPasswordReset etc. are only ever called
+	// from routes router.go mounts solely when email is configured, so
+	// nil here would be a wiring bug, not a real-world state to guard
+	// against defensively.
+	email EmailSender
+	now   func() time.Time
 }
 
-func NewService(users UserStore, passwords PasswordManager, tokens TokenManager) Service {
+func NewService(users UserStore, passwords PasswordManager, tokens TokenManager, email EmailSender) Service {
 	return Service{
 		users:     users,
 		passwords: passwords,
 		tokens:    tokens,
+		email:     email,
+		now:       time.Now,
 	}
 }
 
@@ -131,6 +142,7 @@ func (s Service) CreateUser(ctx context.Context, actingUserID string, input Crea
 		RequiresPasswordChange: true,
 		CreatedByUserID:        actingUserID,
 		AuthProvider:           AuthProviderLocal,
+		EmailVerified:          true,
 	})
 	if err != nil {
 		return User{}, "", err
@@ -301,6 +313,9 @@ func (s Service) LoginWithGoogle(ctx context.Context, identity GoogleIdentity) (
 		IsActive:        true,
 		AuthProvider:    AuthProviderGoogle,
 		GoogleSubjectID: &subjectID,
+		// Google already verified this email as part of its own signup
+		// flow — re-verifying it here would be redundant and bad UX.
+		EmailVerified: true,
 	})
 	if err != nil {
 		return Session{}, err
@@ -324,6 +339,224 @@ func (s Service) issueSession(user User) (Session, error) {
 	}, nil
 }
 
+func (s Service) WithClock(now func() time.Time) Service {
+	s.now = now
+	return s
+}
+
+// SignUpInput is what a requester supplies to self-service signup
+// (OPS-068b) — unlike CreateUserInput, the caller chooses their own
+// password and the role is always RoleRequester; the other 3 roles are
+// always admin-provisioned (#67), never self-signup.
+type SignUpInput struct {
+	Identifier  string
+	Password    string
+	DisplayName string
+}
+
+// SignUp creates a requester account with the caller's own chosen
+// password, emails a 6-digit verification OTP, and returns a session —
+// the account can log in and view immediately, but
+// middleware.RequireVerifiedEmailForRequester blocks creating a work
+// item until VerifyEmail succeeds.
+func (s Service) SignUp(ctx context.Context, input SignUpInput) (Session, error) {
+	identifier := normalizeIdentifier(input.Identifier)
+	displayName := strings.TrimSpace(input.DisplayName)
+
+	if identifier == "" || displayName == "" {
+		return Session{}, ErrInvalidUserInput
+	}
+
+	trimmedPassword := strings.TrimSpace(input.Password)
+	if len(trimmedPassword) < 8 || len(input.Password) > 72 {
+		return Session{}, ErrInvalidUserInput
+	}
+
+	if _, exists := s.users.FindByIdentifier(ctx, identifier); exists {
+		return Session{}, ErrIdentifierTaken
+	}
+
+	passwordHash, err := s.passwords.Hash(input.Password)
+	if err != nil {
+		return Session{}, err
+	}
+
+	// Generate and send the verification code BEFORE persisting the
+	// account — a review caught that doing this the other way around
+	// (create first, then send) left an orphaned account on any send
+	// failure: the row existed, requires EmailVerified forever, and its
+	// one-time code — had Update already written it — could never reach
+	// anyone, since the email that was supposed to carry it never
+	// arrived. Generating the code needs no user ID, so there's no
+	// reason to create the row first.
+	code, err := GenerateOTP()
+	if err != nil {
+		return Session{}, err
+	}
+
+	if err := s.email.Send(ctx, identifier, "Verify your email",
+		fmt.Sprintf("Your verification code is %s. It expires in %d minutes.", code, int(otpTTL.Minutes()))); err != nil {
+		return Session{}, err
+	}
+
+	hash := hashOTP(code)
+	expiresAt := s.now().Add(otpTTL)
+
+	created, err := s.users.Create(ctx, User{
+		Identifier:                     identifier,
+		DisplayName:                    displayName,
+		PasswordHash:                   passwordHash,
+		Roles:                          []Role{RoleRequester},
+		IsActive:                       true,
+		AuthProvider:                   AuthProviderLocal,
+		EmailVerified:                  false,
+		EmailVerificationCodeHash:      &hash,
+		EmailVerificationCodeExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+
+	return s.issueSession(created)
+}
+
+// VerifyEmail checks a 6-digit code against the caller's own account
+// (authenticated — the handler passes the principal's own user ID, not
+// an arbitrary target). Rate-limited the same way as
+// CompletePasswordReset: otpMaxAttempts wrong guesses locks OTP flows for
+// otpLockoutDuration.
+func (s Service) VerifyEmail(ctx context.Context, userID, code string) error {
+	user, ok := s.users.FindByID(ctx, userID)
+	if !ok {
+		return ErrUserNotFound
+	}
+
+	if locked, err := s.checkAndRecordOTPAttempt(ctx, user, code, user.EmailVerificationCodeHash, user.EmailVerificationCodeExpiresAt); err != nil {
+		return err
+	} else if !locked {
+		return ErrInvalidOrExpiredCode
+	}
+
+	user.EmailVerified = true
+	user.EmailVerificationCodeHash = nil
+	user.EmailVerificationCodeExpiresAt = nil
+	user.FailedOTPAttempts = 0
+	user.OTPLockedUntil = nil
+
+	_, err := s.users.Update(ctx, user)
+	return err
+}
+
+// RequestPasswordReset always succeeds from the caller's point of view —
+// it never reveals whether identifier belongs to an account, and only
+// ever actually sends an email for an existing *requester* account (the
+// other 3 roles use admin-initiated reset, #67, by design: there's no
+// email infra story for them, and an external stranger resetting an
+// internal account's password isn't a flow this starter wants to enable
+// even if email were configured for them too).
+func (s Service) RequestPasswordReset(ctx context.Context, identifier string) error {
+	user, ok := s.users.FindByIdentifier(ctx, identifier)
+	if !ok || !user.HasRole(RoleRequester) || user.AuthProvider != AuthProviderLocal {
+		return nil
+	}
+
+	code, err := GenerateOTP()
+	if err != nil {
+		return err
+	}
+
+	hash := hashOTP(code)
+	expiresAt := s.now().Add(otpTTL)
+	user.PasswordResetCodeHash = &hash
+	user.PasswordResetCodeExpiresAt = &expiresAt
+
+	if _, err := s.users.Update(ctx, user); err != nil {
+		return err
+	}
+
+	// The Send error is deliberately swallowed, not returned — this
+	// method's whole contract is "never reveal whether identifier belongs
+	// to an account." Propagating a send failure as an error would do
+	// exactly that: the handler would return 500 for an existing account
+	// whose email happens to fail, and 200 for every nonexistent one,
+	// which is itself a usable enumeration oracle. Once there's
+	// server-side logging (issue #72), that's the right place to surface
+	// a real delivery failure — silently to an operator, never to the
+	// caller.
+	_ = s.email.Send(ctx, user.Identifier, "Reset your password",
+		fmt.Sprintf("Your password reset code is %s. It expires in %d minutes.", code, int(otpTTL.Minutes())))
+
+	return nil
+}
+
+// CompletePasswordReset verifies a 6-digit code against identifier and,
+// on success, sets newPassword. Unauthenticated by design (this is the
+// one account-recovery path for someone who, by definition, might not be
+// able to log in) — the code itself is the proof of identity.
+func (s Service) CompletePasswordReset(ctx context.Context, identifier, code, newPassword string) error {
+	user, ok := s.users.FindByIdentifier(ctx, identifier)
+	if !ok {
+		return ErrInvalidOrExpiredCode
+	}
+
+	if locked, err := s.checkAndRecordOTPAttempt(ctx, user, code, user.PasswordResetCodeHash, user.PasswordResetCodeExpiresAt); err != nil {
+		return err
+	} else if !locked {
+		return ErrInvalidOrExpiredCode
+	}
+
+	trimmedNew := strings.TrimSpace(newPassword)
+	if len(trimmedNew) < 8 || len(newPassword) > 72 {
+		return ErrInvalidUserInput
+	}
+
+	passwordHash, err := s.passwords.Hash(newPassword)
+	if err != nil {
+		return err
+	}
+
+	user.PasswordHash = passwordHash
+	user.PasswordResetCodeHash = nil
+	user.PasswordResetCodeExpiresAt = nil
+	user.FailedOTPAttempts = 0
+	user.OTPLockedUntil = nil
+
+	_, err = s.users.Update(ctx, user)
+	return err
+}
+
+// checkAndRecordOTPAttempt is the one piece of logic both OTP flows
+// share: is the account currently locked out, is a code even outstanding,
+// does it match and hasn't expired — and on a wrong guess, record the
+// attempt and lock the account out once otpMaxAttempts is reached. The
+// bool return is whether the code was valid; the caller still owns what
+// happens next on success (VerifyEmail vs CompletePasswordReset clear and
+// apply different fields).
+func (s Service) checkAndRecordOTPAttempt(ctx context.Context, user User, code string, storedHash *string, expiresAt *time.Time) (bool, error) {
+	now := s.now()
+
+	if user.OTPLockedUntil != nil && now.Before(*user.OTPLockedUntil) {
+		return false, ErrTooManyAttempts
+	}
+
+	valid := storedHash != nil && expiresAt != nil && now.Before(*expiresAt) && verifyOTP(code, *storedHash)
+	if valid {
+		return true, nil
+	}
+
+	user.FailedOTPAttempts++
+	if user.FailedOTPAttempts >= otpMaxAttempts {
+		lockedUntil := now.Add(otpLockoutDuration)
+		user.OTPLockedUntil = &lockedUntil
+	}
+
+	if _, err := s.users.Update(ctx, user); err != nil {
+		return false, err
+	}
+
+	return false, nil
+}
+
 func isKnownRole(role Role) bool {
 	switch role {
 	case RoleAdmin, RoleAssignee, RoleSupervisor, RoleRequester:
@@ -340,6 +573,7 @@ func principalFromUser(user User) Principal {
 		DisplayName:            user.DisplayName,
 		Roles:                  append([]Role(nil), user.Roles...),
 		RequiresPasswordChange: user.RequiresPasswordChange,
+		EmailVerified:          user.EmailVerified,
 	}
 }
 

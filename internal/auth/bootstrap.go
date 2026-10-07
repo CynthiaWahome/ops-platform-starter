@@ -69,13 +69,14 @@ func SeedBootstrapUsers(ctx context.Context, store UserStore, passwords Password
 		}
 
 		if err := store.Seed(ctx, User{
-			ID:           seed.ID,
-			Identifier:   normalizeIdentifier(seed.Identifier),
-			DisplayName:  seed.DisplayName,
-			PasswordHash: passwordHash,
-			Roles:        append([]Role(nil), seed.Roles...),
-			IsActive:     true,
-			AuthProvider: AuthProviderLocal,
+			ID:            seed.ID,
+			Identifier:    normalizeIdentifier(seed.Identifier),
+			DisplayName:   seed.DisplayName,
+			PasswordHash:  passwordHash,
+			Roles:         append([]Role(nil), seed.Roles...),
+			IsActive:      true,
+			AuthProvider:  AuthProviderLocal,
+			EmailVerified: true,
 		}); err != nil {
 			return err
 		}

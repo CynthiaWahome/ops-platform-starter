@@ -25,7 +25,7 @@ func NewPostgresUserStore(pool *pgxpool.Pool) *PostgresUserStore {
 	return &PostgresUserStore{pool: pool}
 }
 
-const userColumns = `id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id`
+const userColumns = `id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id, email_verified, email_verification_code_hash, email_verification_code_expires_at, password_reset_code_hash, password_reset_code_expires_at, failed_otp_attempts, otp_locked_until`
 
 func (s *PostgresUserStore) FindByIdentifier(ctx context.Context, identifier string) (User, bool) {
 	row := db.Querier(ctx, s.pool).QueryRow(ctx,
@@ -75,13 +75,18 @@ func (s *PostgresUserStore) FindByGoogleSubjectID(ctx context.Context, subjectID
 func (s *PostgresUserStore) Create(ctx context.Context, user User) (User, error) {
 	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('users_seq') AS n)
-		INSERT INTO users (id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id)
-		SELECT 'user-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9
+		INSERT INTO users (
+			id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id,
+			email_verified, email_verification_code_hash, email_verification_code_expires_at, password_reset_code_hash, password_reset_code_expires_at, failed_otp_attempts, otp_locked_until
+		)
+		SELECT 'user-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9, $10, $11, $12, $13, $14, $15, $16
 		FROM seq
 		RETURNING `+userColumns,
 		normalizeIdentifier(user.Identifier), user.DisplayName, user.PasswordHash,
 		rolesToStrings(user.Roles), user.IsActive, user.RequiresPasswordChange, user.CreatedByUserID,
 		string(user.AuthProvider), user.GoogleSubjectID,
+		user.EmailVerified, user.EmailVerificationCodeHash, user.EmailVerificationCodeExpiresAt,
+		user.PasswordResetCodeHash, user.PasswordResetCodeExpiresAt, user.FailedOTPAttempts, user.OTPLockedUntil,
 	)
 
 	created, err := scanUser(row)
@@ -125,10 +130,14 @@ func (s *PostgresUserStore) List(ctx context.Context) ([]User, error) {
 func (s *PostgresUserStore) Update(ctx context.Context, user User) (User, error) {
 	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		UPDATE users
-		SET display_name = $2, password_hash = $3, roles = $4, is_active = $5, requires_password_change = $6
+		SET display_name = $2, password_hash = $3, roles = $4, is_active = $5, requires_password_change = $6,
+			email_verified = $7, email_verification_code_hash = $8, email_verification_code_expires_at = $9,
+			password_reset_code_hash = $10, password_reset_code_expires_at = $11, failed_otp_attempts = $12, otp_locked_until = $13
 		WHERE id = $1
 		RETURNING `+userColumns,
 		user.ID, user.DisplayName, user.PasswordHash, rolesToStrings(user.Roles), user.IsActive, user.RequiresPasswordChange,
+		user.EmailVerified, user.EmailVerificationCodeHash, user.EmailVerificationCodeExpiresAt,
+		user.PasswordResetCodeHash, user.PasswordResetCodeExpiresAt, user.FailedOTPAttempts, user.OTPLockedUntil,
 	)
 
 	updated, err := scanUser(row)
@@ -144,12 +153,17 @@ func (s *PostgresUserStore) Update(ctx context.Context, user User) (User, error)
 
 func (s *PostgresUserStore) Seed(ctx context.Context, user User) error {
 	_, err := db.Querier(ctx, s.pool).Exec(ctx, `
-		INSERT INTO users (id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''), $9, $10)
+		INSERT INTO users (
+			id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id,
+			email_verified, email_verification_code_hash, email_verification_code_expires_at, password_reset_code_hash, password_reset_code_expires_at, failed_otp_attempts, otp_locked_until
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''), $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (id) DO NOTHING
 	`, user.ID, normalizeIdentifier(user.Identifier), user.DisplayName, user.PasswordHash,
 		rolesToStrings(user.Roles), user.IsActive, user.RequiresPasswordChange, user.CreatedByUserID,
 		string(user.AuthProvider), user.GoogleSubjectID,
+		user.EmailVerified, user.EmailVerificationCodeHash, user.EmailVerificationCodeExpiresAt,
+		user.PasswordResetCodeHash, user.PasswordResetCodeExpiresAt, user.FailedOTPAttempts, user.OTPLockedUntil,
 	)
 	if err != nil {
 		return fmt.Errorf("auth: seed user: %w", err)
@@ -174,6 +188,8 @@ func scanUser(row rowScanner) (User, error) {
 		&user.ID, &user.Identifier, &user.DisplayName, &user.PasswordHash,
 		&roles, &user.IsActive, &user.RequiresPasswordChange, &createdBy,
 		&authProvider, &user.GoogleSubjectID,
+		&user.EmailVerified, &user.EmailVerificationCodeHash, &user.EmailVerificationCodeExpiresAt,
+		&user.PasswordResetCodeHash, &user.PasswordResetCodeExpiresAt, &user.FailedOTPAttempts, &user.OTPLockedUntil,
 	); err != nil {
 		return User{}, err
 	}
