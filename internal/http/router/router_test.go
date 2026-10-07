@@ -1806,6 +1806,10 @@ func TestSupervisorCannotEscalateSupervisedAssigneeToAdmin(t *testing.T) {
 	teamRec := httptest.NewRecorder()
 	handler.ServeHTTP(teamRec, teamReq)
 
+	if teamRec.Code != http.StatusCreated {
+		t.Fatalf("expected team create status %d, got %d: %s", http.StatusCreated, teamRec.Code, teamRec.Body.String())
+	}
+
 	var team struct {
 		ID string `json:"id"`
 	}
@@ -1816,7 +1820,12 @@ func TestSupervisorCannotEscalateSupervisedAssigneeToAdmin(t *testing.T) {
 	supervisorAddReq := httptest.NewRequest(http.MethodPost, "/teams/"+team.ID+"/supervisors", bytes.NewBufferString(`{"userId":"user-supervisor-001"}`))
 	supervisorAddReq.Header.Set("Authorization", "Bearer "+adminToken)
 	supervisorAddReq.Header.Set("Content-Type", "application/json")
-	handler.ServeHTTP(httptest.NewRecorder(), supervisorAddReq)
+	supervisorAddRec := httptest.NewRecorder()
+	handler.ServeHTTP(supervisorAddRec, supervisorAddReq)
+
+	if supervisorAddRec.Code != http.StatusCreated {
+		t.Fatalf("expected supervisor add status %d, got %d: %s", http.StatusCreated, supervisorAddRec.Code, supervisorAddRec.Body.String())
+	}
 
 	createBody := bytes.NewBufferString(`{"role":"assignee","identifier":"escalation-target@ops.local","displayName":"Escalation Target","teamId":"` + team.ID + `"}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/users", createBody)
@@ -1824,6 +1833,10 @@ func TestSupervisorCannotEscalateSupervisedAssigneeToAdmin(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
 
 	var created struct {
 		User struct {
@@ -1850,7 +1863,12 @@ func TestSupervisorCannotEscalateSupervisedAssigneeToAdmin(t *testing.T) {
 	adminPromoteReq := httptest.NewRequest(http.MethodPatch, "/users/"+created.User.ID, bytes.NewBufferString(`{"role":"admin"}`))
 	adminPromoteReq.Header.Set("Authorization", "Bearer "+adminToken)
 	adminPromoteReq.Header.Set("Content-Type", "application/json")
-	handler.ServeHTTP(httptest.NewRecorder(), adminPromoteReq)
+	adminPromoteRec := httptest.NewRecorder()
+	handler.ServeHTTP(adminPromoteRec, adminPromoteReq)
+
+	if adminPromoteRec.Code != http.StatusOK {
+		t.Fatalf("expected admin promotion status %d, got %d: %s", http.StatusOK, adminPromoteRec.Code, adminPromoteRec.Body.String())
+	}
 
 	resetReq := httptest.NewRequest(http.MethodPost, "/users/"+created.User.ID+"/reset-password", bytes.NewBufferString(`{}`))
 	resetReq.Header.Set("Authorization", "Bearer "+supervisorToken)
