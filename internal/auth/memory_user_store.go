@@ -49,6 +49,22 @@ func (s *MemoryUserStore) FindByID(_ context.Context, id string) (User, bool) {
 	return User{}, false
 }
 
+// FindByGoogleSubjectID backs OPS-068a's repeat-login path — find the
+// existing account for a Google identity rather than creating a duplicate
+// on every login.
+func (s *MemoryUserStore) FindByGoogleSubjectID(_ context.Context, subjectID string) (User, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, user := range s.users {
+		if user.GoogleSubjectID != nil && *user.GoogleSubjectID == subjectID {
+			return user, true
+		}
+	}
+
+	return User{}, false
+}
+
 func (s *MemoryUserStore) Create(_ context.Context, user User) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

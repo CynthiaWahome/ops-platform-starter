@@ -16,6 +16,11 @@ var (
 	ErrInvalidRole      = errors.New("invalid role")
 	ErrIdentifierTaken  = errors.New("identifier already in use")
 	ErrUserNotFound     = errors.New("user not found")
+	// ErrGoogleEmailAlreadyRegistered backs OPS-068a's explicitly
+	// out-of-scope case: a Google identity whose email already belongs to
+	// an existing local (password) account. Linking the two is a
+	// deliberately separate, later piece of work, not handled here.
+	ErrGoogleEmailAlreadyRegistered = errors.New("an account with this email already exists; log in with your password instead")
 )
 
 type Role string
@@ -30,6 +35,16 @@ const (
 	// renamed to RoleSupervisor; this is a genuinely new, narrower role,
 	// not a revival of the old one.
 	RoleRequester Role = "requester"
+)
+
+// AuthProvider distinguishes a password-based account (every account
+// before OPS-068a, and still the only path for admin/supervisor/assignee)
+// from a Google-authenticated one (requester-only, OPS-068a).
+type AuthProvider string
+
+const (
+	AuthProviderLocal  AuthProvider = "local"
+	AuthProviderGoogle AuthProvider = "google"
 )
 
 type User struct {
@@ -51,6 +66,15 @@ type User struct {
 	// system at startup, not by an admin) and set to the acting admin's
 	// user ID for every account created via POST /users.
 	CreatedByUserID string `json:"createdByUserId,omitempty"`
+	// AuthProvider and GoogleSubjectID back OPS-068a's Google signup path.
+	// A Google-authenticated user has PasswordHash == "" (no password
+	// exists to compare against — Login's password path naturally rejects
+	// these via a failing bcrypt compare, no special-casing needed) and
+	// RequiresPasswordChange == false (there's no password to force a
+	// change on). GoogleSubjectID is Google's stable per-account "sub"
+	// claim — nil for every local account, unique when set.
+	AuthProvider    AuthProvider `json:"authProvider"`
+	GoogleSubjectID *string      `json:"-"`
 }
 
 type Principal struct {

@@ -25,7 +25,7 @@ func NewPostgresUserStore(pool *pgxpool.Pool) *PostgresUserStore {
 	return &PostgresUserStore{pool: pool}
 }
 
-const userColumns = `id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id`
+const userColumns = `id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id`
 
 func (s *PostgresUserStore) FindByIdentifier(ctx context.Context, identifier string) (User, bool) {
 	row := db.Querier(ctx, s.pool).QueryRow(ctx,
@@ -55,15 +55,33 @@ func (s *PostgresUserStore) FindByID(ctx context.Context, id string) (User, bool
 	return user, true
 }
 
+// FindByGoogleSubjectID backs OPS-068a's repeat-login path — find the
+// existing account for a Google identity rather than creating a duplicate
+// on every login.
+func (s *PostgresUserStore) FindByGoogleSubjectID(ctx context.Context, subjectID string) (User, bool) {
+	row := db.Querier(ctx, s.pool).QueryRow(ctx,
+		`SELECT `+userColumns+` FROM users WHERE google_subject_id = $1`,
+		subjectID,
+	)
+
+	user, err := scanUser(row)
+	if err != nil {
+		return User{}, false
+	}
+
+	return user, true
+}
+
 func (s *PostgresUserStore) Create(ctx context.Context, user User) (User, error) {
 	row := db.Querier(ctx, s.pool).QueryRow(ctx, `
 		WITH seq AS (SELECT nextval('users_seq') AS n)
-		INSERT INTO users (id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id)
-		SELECT 'user-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6, nullif($7, '')
+		INSERT INTO users (id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id)
+		SELECT 'user-' || lpad(n::text, greatest(length(n::text), 4), '0'), $1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9
 		FROM seq
 		RETURNING `+userColumns,
 		normalizeIdentifier(user.Identifier), user.DisplayName, user.PasswordHash,
 		rolesToStrings(user.Roles), user.IsActive, user.RequiresPasswordChange, user.CreatedByUserID,
+		string(user.AuthProvider), user.GoogleSubjectID,
 	)
 
 	created, err := scanUser(row)
@@ -126,11 +144,12 @@ func (s *PostgresUserStore) Update(ctx context.Context, user User) (User, error)
 
 func (s *PostgresUserStore) Seed(ctx context.Context, user User) error {
 	_, err := db.Querier(ctx, s.pool).Exec(ctx, `
-		INSERT INTO users (id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''))
+		INSERT INTO users (id, identifier, display_name, password_hash, roles, is_active, requires_password_change, created_by_user_id, auth_provider, google_subject_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''), $9, $10)
 		ON CONFLICT (id) DO NOTHING
 	`, user.ID, normalizeIdentifier(user.Identifier), user.DisplayName, user.PasswordHash,
 		rolesToStrings(user.Roles), user.IsActive, user.RequiresPasswordChange, user.CreatedByUserID,
+		string(user.AuthProvider), user.GoogleSubjectID,
 	)
 	if err != nil {
 		return fmt.Errorf("auth: seed user: %w", err)
@@ -145,19 +164,22 @@ type rowScanner interface {
 
 func scanUser(row rowScanner) (User, error) {
 	var (
-		user      User
-		roles     []string
-		createdBy *string
+		user         User
+		roles        []string
+		createdBy    *string
+		authProvider string
 	)
 
 	if err := row.Scan(
 		&user.ID, &user.Identifier, &user.DisplayName, &user.PasswordHash,
 		&roles, &user.IsActive, &user.RequiresPasswordChange, &createdBy,
+		&authProvider, &user.GoogleSubjectID,
 	); err != nil {
 		return User{}, err
 	}
 
 	user.Roles = stringsToRoles(roles)
+	user.AuthProvider = AuthProvider(authProvider)
 	if createdBy != nil {
 		user.CreatedByUserID = *createdBy
 	}

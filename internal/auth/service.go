@@ -13,6 +13,8 @@ import (
 type UserStore interface {
 	FindByIdentifier(ctx context.Context, identifier string) (User, bool)
 	FindByID(ctx context.Context, id string) (User, bool)
+	// FindByGoogleSubjectID backs OPS-068a's repeat-login path.
+	FindByGoogleSubjectID(ctx context.Context, subjectID string) (User, bool)
 	// Create inserts a brand-new user with a store-generated ID (sequence
 	// in Postgres, incrementing counter in memory) — used for every
 	// admin-created account (OPS-067's POST /users).
@@ -58,18 +60,7 @@ func (s Service) Login(ctx context.Context, identifier, password string) (Sessio
 		return Session{}, ErrInvalidCredentials
 	}
 
-	principal := principalFromUser(user)
-
-	token, err := s.tokens.Issue(principal)
-	if err != nil {
-		return Session{}, err
-	}
-
-	return Session{
-		AccessToken: token.Value,
-		ExpiresAt:   token.ExpiresAt,
-		Principal:   principal,
-	}, nil
+	return s.issueSession(user)
 }
 
 func (s Service) Authenticate(ctx context.Context, rawToken string) (Principal, error) {
@@ -139,6 +130,7 @@ func (s Service) CreateUser(ctx context.Context, actingUserID string, input Crea
 		IsActive:               true,
 		RequiresPasswordChange: true,
 		CreatedByUserID:        actingUserID,
+		AuthProvider:           AuthProviderLocal,
 	})
 	if err != nil {
 		return User{}, "", err
@@ -265,6 +257,71 @@ func (s Service) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 
 	_, err = s.users.Update(ctx, user)
 	return err
+}
+
+// GoogleIdentity is what the OAuth handler hands the service after
+// exchanging a Google authorization code — just the 3 fields OPS-068a
+// actually needs, independent of whatever the real Google API response
+// shape looks like.
+type GoogleIdentity struct {
+	Subject string
+	Email   string
+	Name    string
+}
+
+// LoginWithGoogle is the requester self-service signup path (OPS-068a).
+// First login for a given Google subject auto-creates a requester-role
+// account with no team and no password; every later login for the same
+// subject finds that same row rather than creating a duplicate. Linking a
+// Google identity to an existing local account is explicitly out of
+// scope — if the email already belongs to one, this returns
+// ErrGoogleEmailAlreadyRegistered rather than silently merging or
+// silently creating a second, confusing account under the same email.
+func (s Service) LoginWithGoogle(ctx context.Context, identity GoogleIdentity) (Session, error) {
+	if existing, ok := s.users.FindByGoogleSubjectID(ctx, identity.Subject); ok {
+		if !existing.IsActive {
+			return Session{}, ErrInactiveUser
+		}
+
+		return s.issueSession(existing)
+	}
+
+	identifier := normalizeIdentifier(identity.Email)
+
+	if _, exists := s.users.FindByIdentifier(ctx, identifier); exists {
+		return Session{}, ErrGoogleEmailAlreadyRegistered
+	}
+
+	subjectID := identity.Subject
+
+	created, err := s.users.Create(ctx, User{
+		Identifier:      identifier,
+		DisplayName:     identity.Name,
+		Roles:           []Role{RoleRequester},
+		IsActive:        true,
+		AuthProvider:    AuthProviderGoogle,
+		GoogleSubjectID: &subjectID,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+
+	return s.issueSession(created)
+}
+
+func (s Service) issueSession(user User) (Session, error) {
+	principal := principalFromUser(user)
+
+	token, err := s.tokens.Issue(principal)
+	if err != nil {
+		return Session{}, err
+	}
+
+	return Session{
+		AccessToken: token.Value,
+		ExpiresAt:   token.ExpiresAt,
+		Principal:   principal,
+	}, nil
 }
 
 func isKnownRole(role Role) bool {

@@ -10,7 +10,8 @@ import (
 )
 
 type AuthHandler struct {
-	service auth.Service
+	service      auth.Service
+	googleClient auth.GoogleOAuthClient
 }
 
 type loginRequest struct {
@@ -22,8 +23,81 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
-func NewAuthHandler(service auth.Service) AuthHandler {
-	return AuthHandler{service: service}
+// NewAuthHandler's googleClient may be nil — GoogleLogin and
+// GoogleCallback are the only two methods that ever touch it, and
+// router.go only wires those two routes up at all when Google OAuth is
+// actually configured (OPS-068a). Every other AuthHandler method (Login,
+// ChangePassword, Me) never references it.
+func NewAuthHandler(service auth.Service, googleClient auth.GoogleOAuthClient) AuthHandler {
+	return AuthHandler{service: service, googleClient: googleClient}
+}
+
+// googleOAuthStateCookie is the short-lived, httponly cookie GoogleLogin
+// sets and GoogleCallback checks against the ?state= query param — CSRF
+// protection for the redirect round trip. This codebase is otherwise
+// entirely stateless bearer-token auth; a cookie exists only for this one
+// flow, where the browser (not an API client holding a token) is the one
+// making the redirect.
+const googleOAuthStateCookie = "google_oauth_state"
+
+// GoogleLogin redirects the browser to Google's consent screen (OPS-068a).
+func (h AuthHandler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
+	state, err := auth.GenerateOAuthState()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to start google login"})
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     googleOAuthStateCookie,
+		Value:    state,
+		Path:     "/",
+		MaxAge:   300,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.Redirect(w, r, h.googleClient.AuthCodeURL(state), http.StatusFound)
+}
+
+// GoogleCallback completes the round trip: verifies state, exchanges the
+// code for the caller's Google identity, and logs them in — creating a
+// requester-role account on first login for that identity, finding the
+// existing one on every later login (OPS-068a).
+func (h AuthHandler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(googleOAuthStateCookie)
+	if err != nil || r.URL.Query().Get("state") == "" || r.URL.Query().Get("state") != cookie.Value {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid or missing oauth state"})
+		return
+	}
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "missing authorization code"})
+		return
+	}
+
+	identity, err := h.googleClient.Exchange(r.Context(), code)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorResponse{Message: "unable to verify google identity"})
+		return
+	}
+
+	session, err := h.service.LoginWithGoogle(r.Context(), identity)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrGoogleEmailAlreadyRegistered):
+			writeJSON(w, http.StatusConflict, errorResponse{Message: err.Error()})
+		case errors.Is(err, auth.ErrInactiveUser):
+			writeJSON(w, http.StatusForbidden, errorResponse{Message: "user is inactive"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to complete google login"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, session)
 }
 
 func (h AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
