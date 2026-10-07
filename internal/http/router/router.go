@@ -446,5 +446,9 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		),
 	)
 
-	return mux, pool, nil
+	// Wraps the whole mux, not individual routes (issue #72) — every
+	// request gets one log line, including a 404 that hit no route at
+	// all, which is exactly the visibility that was missing when a
+	// failed #68b signup produced nothing in the server's own output.
+	return httpmiddleware.RequestLogger(mux), pool, nil
 }
