@@ -53,7 +53,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 		t.Fatalf("expected table count query to succeed, got error: %v", err)
 	}
 
-	const wantTables = 9 // work_items, status_history, assignments, assignment_history, teams, team_memberships, team_supervisions, notifications, attachments
+	const wantTables = 10 // work_items, status_history, assignments, assignment_history, teams, team_memberships, team_supervisions, notifications, attachments, users
 	if tableCount != wantTables {
 		t.Fatalf("expected %d tables after migration, got %d", wantTables, tableCount)
 	}

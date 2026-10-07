@@ -1607,3 +1607,310 @@ func loginAndReturnToken(t *testing.T, handler http.Handler, identifier, passwor
 
 	return response.AccessToken
 }
+
+// TestAdminCreatesUserAndNewUserMustChangePasswordBeforeActing proves
+// OPS-067's full loop end to end through the real HTTP handlers, not just
+// unit tests: admin provisions a new assignee with a temp password, that
+// account is blocked from every route except /auth/me and
+// /auth/change-password until it changes its password, and once it does
+// it can act as a normal assignee.
+func TestAdminCreatesUserAndNewUserMustChangePasswordBeforeActing(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+
+	teamBody := bytes.NewBufferString(`{"name":"Onboarding Team"}`)
+	teamReq := httptest.NewRequest(http.MethodPost, "/teams", teamBody)
+	teamReq.Header.Set("Authorization", "Bearer "+adminToken)
+	teamReq.Header.Set("Content-Type", "application/json")
+	teamRec := httptest.NewRecorder()
+	handler.ServeHTTP(teamRec, teamReq)
+
+	if teamRec.Code != http.StatusCreated {
+		t.Fatalf("expected team create status %d, got %d: %s", http.StatusCreated, teamRec.Code, teamRec.Body.String())
+	}
+
+	var team struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(teamRec.Body).Decode(&team); err != nil {
+		t.Fatalf("expected team response to decode, got error: %v", err)
+	}
+
+	createBody := bytes.NewBufferString(`{"role":"assignee","identifier":"new-assignee@ops.local","displayName":"New Assignee","teamId":"` + team.ID + `"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/users", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created struct {
+		User struct {
+			ID                     string `json:"id"`
+			RequiresPasswordChange bool   `json:"requiresPasswordChange"`
+		} `json:"user"`
+		TempPassword string `json:"tempPassword"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected create response to decode, got error: %v", err)
+	}
+
+	if !created.User.RequiresPasswordChange {
+		t.Fatal("expected newly created user to require a password change")
+	}
+
+	if created.TempPassword == "" {
+		t.Fatal("expected a temp password in the create response")
+	}
+
+	newUserToken := loginAndReturnToken(t, handler, "new-assignee@ops.local", created.TempPassword)
+
+	blockedReq := httptest.NewRequest(http.MethodGet, "/workitems", nil)
+	blockedReq.Header.Set("Authorization", "Bearer "+newUserToken)
+	blockedRec := httptest.NewRecorder()
+	handler.ServeHTTP(blockedRec, blockedReq)
+
+	if blockedRec.Code != http.StatusForbidden {
+		t.Fatalf("expected gated status %d, got %d: %s", http.StatusForbidden, blockedRec.Code, blockedRec.Body.String())
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+newUserToken)
+	meRec := httptest.NewRecorder()
+	handler.ServeHTTP(meRec, meReq)
+
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("expected /auth/me to stay reachable while gated, got %d: %s", meRec.Code, meRec.Body.String())
+	}
+
+	changeBody := bytes.NewBufferString(`{"oldPassword":"` + created.TempPassword + `","newPassword":"a-real-password-123"}`)
+	changeReq := httptest.NewRequest(http.MethodPost, "/auth/change-password", changeBody)
+	changeReq.Header.Set("Authorization", "Bearer "+newUserToken)
+	changeReq.Header.Set("Content-Type", "application/json")
+	changeRec := httptest.NewRecorder()
+	handler.ServeHTTP(changeRec, changeReq)
+
+	if changeRec.Code != http.StatusNoContent {
+		t.Fatalf("expected change-password status %d, got %d: %s", http.StatusNoContent, changeRec.Code, changeRec.Body.String())
+	}
+
+	clearedToken := loginAndReturnToken(t, handler, "new-assignee@ops.local", "a-real-password-123")
+
+	unblockedReq := httptest.NewRequest(http.MethodGet, "/workitems", nil)
+	unblockedReq.Header.Set("Authorization", "Bearer "+clearedToken)
+	unblockedRec := httptest.NewRecorder()
+	handler.ServeHTTP(unblockedRec, unblockedReq)
+
+	if unblockedRec.Code != http.StatusOK {
+		t.Fatalf("expected unblocked status %d, got %d: %s", http.StatusOK, unblockedRec.Code, unblockedRec.Body.String())
+	}
+}
+
+// TestSupervisorOnlySeesOwnTeamsAssigneesInUserList proves the
+// supervisor-scoped GET /users visibility rule: a supervisor sees
+// assignees on their own team plus themselves, never an assignee on
+// someone else's team.
+func TestSupervisorOnlySeesOwnTeamsAssigneesInUserList(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	supervisorToken := loginAndReturnToken(t, handler, "supervisor@ops.local", "ChangeMe123!")
+
+	teamBody := bytes.NewBufferString(`{"name":"Team A"}`)
+	teamReq := httptest.NewRequest(http.MethodPost, "/teams", teamBody)
+	teamReq.Header.Set("Authorization", "Bearer "+adminToken)
+	teamReq.Header.Set("Content-Type", "application/json")
+	teamRec := httptest.NewRecorder()
+	handler.ServeHTTP(teamRec, teamReq)
+
+	var team struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(teamRec.Body).Decode(&team); err != nil {
+		t.Fatalf("expected team response to decode, got error: %v", err)
+	}
+
+	supervisorAddReq := httptest.NewRequest(http.MethodPost, "/teams/"+team.ID+"/supervisors", bytes.NewBufferString(`{"userId":"user-supervisor-001"}`))
+	supervisorAddReq.Header.Set("Authorization", "Bearer "+adminToken)
+	supervisorAddReq.Header.Set("Content-Type", "application/json")
+	supervisorAddRec := httptest.NewRecorder()
+	handler.ServeHTTP(supervisorAddRec, supervisorAddReq)
+
+	if supervisorAddRec.Code != http.StatusCreated {
+		t.Fatalf("expected add-supervisor status %d, got %d: %s", http.StatusCreated, supervisorAddRec.Code, supervisorAddRec.Body.String())
+	}
+
+	createBody := bytes.NewBufferString(`{"role":"assignee","identifier":"team-a-assignee@ops.local","displayName":"Team A Assignee","teamId":"` + team.ID + `"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/users", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/users", nil)
+	listReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+
+	var users []struct {
+		Identifier string `json:"identifier"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&users); err != nil {
+		t.Fatalf("expected list response to decode, got error: %v", err)
+	}
+
+	foundNewAssignee := false
+	for _, u := range users {
+		if u.Identifier == "team-a-assignee@ops.local" {
+			foundNewAssignee = true
+		}
+		if u.Identifier == "assignee@ops.local" {
+			t.Fatal("expected the unrelated bootstrap assignee (not on this supervisor's team) to be excluded")
+		}
+	}
+
+	if !foundNewAssignee {
+		t.Fatal("expected the supervisor to see the assignee just added to their own team")
+	}
+}
+
+// TestSupervisorCannotEscalateSupervisedAssigneeToAdmin proves the
+// privilege-escalation path a review caught is closed: a supervisor must
+// not be able to PATCH a supervised assignee's role to admin (and, since
+// team membership isn't tied to auth.Role, then reset that now-admin
+// account's password and obtain its credentials).
+func TestSupervisorCannotEscalateSupervisedAssigneeToAdmin(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+	supervisorToken := loginAndReturnToken(t, handler, "supervisor@ops.local", "ChangeMe123!")
+
+	teamReq := httptest.NewRequest(http.MethodPost, "/teams", bytes.NewBufferString(`{"name":"Escalation Test Team"}`))
+	teamReq.Header.Set("Authorization", "Bearer "+adminToken)
+	teamReq.Header.Set("Content-Type", "application/json")
+	teamRec := httptest.NewRecorder()
+	handler.ServeHTTP(teamRec, teamReq)
+
+	if teamRec.Code != http.StatusCreated {
+		t.Fatalf("expected team create status %d, got %d: %s", http.StatusCreated, teamRec.Code, teamRec.Body.String())
+	}
+
+	var team struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(teamRec.Body).Decode(&team); err != nil {
+		t.Fatalf("expected team response to decode, got error: %v", err)
+	}
+
+	supervisorAddReq := httptest.NewRequest(http.MethodPost, "/teams/"+team.ID+"/supervisors", bytes.NewBufferString(`{"userId":"user-supervisor-001"}`))
+	supervisorAddReq.Header.Set("Authorization", "Bearer "+adminToken)
+	supervisorAddReq.Header.Set("Content-Type", "application/json")
+	supervisorAddRec := httptest.NewRecorder()
+	handler.ServeHTTP(supervisorAddRec, supervisorAddReq)
+
+	if supervisorAddRec.Code != http.StatusCreated {
+		t.Fatalf("expected supervisor add status %d, got %d: %s", http.StatusCreated, supervisorAddRec.Code, supervisorAddRec.Body.String())
+	}
+
+	createBody := bytes.NewBufferString(`{"role":"assignee","identifier":"escalation-target@ops.local","displayName":"Escalation Target","teamId":"` + team.ID + `"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/users", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("expected create response to decode, got error: %v", err)
+	}
+
+	escalateReq := httptest.NewRequest(http.MethodPatch, "/users/"+created.User.ID, bytes.NewBufferString(`{"role":"admin"}`))
+	escalateReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	escalateReq.Header.Set("Content-Type", "application/json")
+	escalateRec := httptest.NewRecorder()
+	handler.ServeHTTP(escalateRec, escalateReq)
+
+	if escalateRec.Code != http.StatusForbidden {
+		t.Fatalf("expected role-escalation attempt status %d, got %d: %s", http.StatusForbidden, escalateRec.Code, escalateRec.Body.String())
+	}
+
+	// Defense in depth: even against an account that already holds the
+	// admin role (simulating the escalation having somehow succeeded
+	// anyway), a supervisor must not be able to reset its password.
+	adminPromoteReq := httptest.NewRequest(http.MethodPatch, "/users/"+created.User.ID, bytes.NewBufferString(`{"role":"admin"}`))
+	adminPromoteReq.Header.Set("Authorization", "Bearer "+adminToken)
+	adminPromoteReq.Header.Set("Content-Type", "application/json")
+	adminPromoteRec := httptest.NewRecorder()
+	handler.ServeHTTP(adminPromoteRec, adminPromoteReq)
+
+	if adminPromoteRec.Code != http.StatusOK {
+		t.Fatalf("expected admin promotion status %d, got %d: %s", http.StatusOK, adminPromoteRec.Code, adminPromoteRec.Body.String())
+	}
+
+	resetReq := httptest.NewRequest(http.MethodPost, "/users/"+created.User.ID+"/reset-password", bytes.NewBufferString(`{}`))
+	resetReq.Header.Set("Authorization", "Bearer "+supervisorToken)
+	resetReq.Header.Set("Content-Type", "application/json")
+	resetRec := httptest.NewRecorder()
+	handler.ServeHTTP(resetRec, resetReq)
+
+	if resetRec.Code != http.StatusForbidden {
+		t.Fatalf("expected supervisor reset-password-on-admin status %d, got %d: %s", http.StatusForbidden, resetRec.Code, resetRec.Body.String())
+	}
+}
+
+// TestCreateUserRejectsNonexistentTeamWithoutOrphaningAccount proves the
+// ordering fix a review caught: an invalid teamId must be rejected before
+// the account is created, not after — the old order left an orphaned,
+// permanently-locked-out account (its one-time temp password lost in a
+// failed response) on every bad teamId.
+func TestCreateUserRejectsNonexistentTeamWithoutOrphaningAccount(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+	adminToken := loginAndReturnToken(t, handler, "admin@ops.local", "ChangeMe123!")
+
+	createBody := bytes.NewBufferString(`{"role":"assignee","identifier":"orphan-check@ops.local","displayName":"Orphan Check","teamId":"team-9999"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/users", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d for a nonexistent team, got %d: %s", http.StatusBadRequest, createRec.Code, createRec.Body.String())
+	}
+
+	// The account must never have been created at all — proven by login
+	// being rejected as "invalid credentials" (no such identifier),
+	// rather than any password actually being checked.
+	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"identifier":"orphan-check@ops.local","password":"anything"}`))
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, loginReq)
+
+	if loginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected no account to have been created, got login status %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+}

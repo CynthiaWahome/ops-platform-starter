@@ -54,18 +54,22 @@ func newTestService(t *testing.T) Service {
 	t.Helper()
 
 	passwords := NewBcryptPasswordManager(bcrypt.MinCost)
-	users, err := NewStaticUserStore(passwords, []StaticUserSeed{
-		{
-			ID:          "user-admin-001",
-			Identifier:  "admin@ops.local",
-			DisplayName: "Platform Admin",
-			Password:    "ChangeMe123!",
-			Roles:       []Role{RoleAdmin},
-			IsActive:    true,
-		},
-	})
+	users := NewMemoryUserStore()
+
+	passwordHash, err := passwords.Hash("ChangeMe123!")
 	if err != nil {
-		t.Fatalf("expected static store to be created, got error: %v", err)
+		t.Fatalf("expected password hash to succeed, got error: %v", err)
+	}
+
+	if err := users.Seed(context.Background(), User{
+		ID:           "user-admin-001",
+		Identifier:   "admin@ops.local",
+		DisplayName:  "Platform Admin",
+		PasswordHash: passwordHash,
+		Roles:        []Role{RoleAdmin},
+		IsActive:     true,
+	}); err != nil {
+		t.Fatalf("expected user to be seeded, got error: %v", err)
 	}
 
 	tokens := NewJWTManager("test-secret", "ops-platform-starter-backend", time.Hour).

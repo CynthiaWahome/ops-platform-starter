@@ -10,3 +10,13 @@ secret:
   ignored-matches:
     - name: local-only docker-compose Postgres default password
       match: postgres
+    # internal/auth/password.go's tempPasswordCharset is a character
+    # alphabet GenerateTempPassword samples from via crypto/rand — not a
+    # secret itself, the same way the charset in any password generator
+    # isn't one. The variable name containing "Password" next to a long,
+    # mixed-character string literal is exactly the shape GitGuardian's
+    # generic high-entropy detector flags; genuine false positive,
+    # documented here rather than left as a permanently red CI check
+    # (OPS-067, same reasoning as the docker-compose entry above).
+    - name: temp-password generator alphabet, not a secret value
+      match: ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%

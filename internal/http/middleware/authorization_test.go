@@ -48,6 +48,54 @@ func TestRequireRolesRejectsForbiddenRole(t *testing.T) {
 	}
 }
 
+func TestRequirePasswordChangeClearedRejectsFlaggedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/workitems", nil)
+	req = req.WithContext(ContextWithPrincipal(req.Context(), auth.Principal{
+		UserID:                 "user-0005",
+		Identifier:             "new-assignee@ops.local",
+		DisplayName:            "New Assignee",
+		Roles:                  []auth.Role{auth.RoleAssignee},
+		RequiresPasswordChange: true,
+	}))
+	rec := httptest.NewRecorder()
+
+	handler := RequirePasswordChangeCleared(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+	}
+}
+
+func TestRequirePasswordChangeClearedAllowsClearedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/workitems", nil)
+	req = req.WithContext(ContextWithPrincipal(req.Context(), auth.Principal{
+		UserID:                 "user-0005",
+		Identifier:             "new-assignee@ops.local",
+		DisplayName:            "New Assignee",
+		Roles:                  []auth.Role{auth.RoleAssignee},
+		RequiresPasswordChange: false,
+	}))
+	rec := httptest.NewRecorder()
+
+	handler := RequirePasswordChangeCleared(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+}
+
 func TestRequireRolesAllowsMatchingRole(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,7 @@ package teams
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 )
@@ -33,6 +34,27 @@ func (s Service) CreateTeam(ctx context.Context, name string) (Team, error) {
 
 func (s Service) ListTeams(ctx context.Context) ([]Team, error) {
 	return s.teamStore.List(ctx)
+}
+
+// TeamExists reports whether teamID refers to a real team. Used by callers
+// (e.g. handlers.UsersHandler.Create, OPS-067) that need to validate a team
+// reference *before* taking an action that would be awkward to roll back —
+// creating a user account whose temp password is only ever shown once, for
+// instance — rather than discovering the team was invalid afterward.
+func (s Service) TeamExists(ctx context.Context, teamID string) (bool, error) {
+	if strings.TrimSpace(teamID) == "" {
+		return false, nil
+	}
+
+	if _, err := s.teamStore.GetByID(ctx, teamID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	return true, nil
 }
 
 // AddAssignee puts an assignee on a team, admin-only in practice (enforced
