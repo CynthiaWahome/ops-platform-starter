@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -75,18 +76,22 @@ func newTestAuthService(t *testing.T) auth.Service {
 	t.Helper()
 
 	passwords := auth.NewBcryptPasswordManager(bcrypt.MinCost)
-	users, err := auth.NewStaticUserStore(passwords, []auth.StaticUserSeed{
-		{
-			ID:          "user-admin-001",
-			Identifier:  "admin@ops.local",
-			DisplayName: "Platform Admin",
-			Password:    "ChangeMe123!",
-			Roles:       []auth.Role{auth.RoleAdmin},
-			IsActive:    true,
-		},
-	})
+	users := auth.NewMemoryUserStore()
+
+	passwordHash, err := passwords.Hash("ChangeMe123!")
 	if err != nil {
-		t.Fatalf("expected static store to be created, got error: %v", err)
+		t.Fatalf("expected password hash to succeed, got error: %v", err)
+	}
+
+	if err := users.Seed(context.Background(), auth.User{
+		ID:           "user-admin-001",
+		Identifier:   "admin@ops.local",
+		DisplayName:  "Platform Admin",
+		PasswordHash: passwordHash,
+		Roles:        []auth.Role{auth.RoleAdmin},
+		IsActive:     true,
+	}); err != nil {
+		t.Fatalf("expected user to be seeded, got error: %v", err)
 	}
 
 	tokens := auth.NewJWTManager("test-secret", "ops-platform-starter-backend", time.Hour).

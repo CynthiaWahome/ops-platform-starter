@@ -24,11 +24,6 @@ import (
 func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, error) {
 	mux := http.NewServeMux()
 
-	authService, err := auth.NewBootstrapService(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	var (
 		workItemStore          workitems.Store
 		statusHistoryStore     workitems.StatusHistoryStore
@@ -39,8 +34,14 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		supervisionStore       teams.SupervisionStore
 		notificationStore      notifications.Store
 		attachmentMetaStore    attachments.Store
-		pool                   *pgxpool.Pool
-		txRunner               workitems.TxRunner
+		// userStore joins this same in-memory/Postgres split for the first
+		// time in OPS-067 — before this, auth was the one domain still
+		// rebuilt from env vars on every process start, even when
+		// DATABASE_URL was set for everything else.
+		userStore auth.UserStore
+		pool      *pgxpool.Pool
+		txRunner  workitems.TxRunner
+		err       error
 	)
 
 	// cfg.DatabaseURL empty is the default, zero-setup path every test
@@ -58,6 +59,7 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		supervisionStore = teams.NewMemorySupervisionStore()
 		notificationStore = notifications.NewMemoryStore()
 		attachmentMetaStore = attachments.NewMemoryStore()
+		userStore = auth.NewMemoryUserStore()
 	} else {
 		pool, err = db.Open(ctx, cfg.DatabaseURL)
 		if err != nil {
@@ -78,11 +80,28 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 		supervisionStore = teams.NewPostgresSupervisionStore(pool)
 		notificationStore = notifications.NewPostgresStore(pool)
 		attachmentMetaStore = attachments.NewPostgresStore(pool)
+		userStore = auth.NewPostgresUserStore(pool)
 		// txRunner stays nil in the in-memory branch above — see
 		// workitems.TxRunner's doc comment for why that's correct, not
 		// just unimplemented.
 		txRunner = db.PoolTxRunner{Pool: pool}
 	}
+
+	passwords := auth.NewBcryptPasswordManager(0)
+	tokens := auth.NewJWTManager(cfg.AuthTokenSecret, "ops-platform-starter-backend", cfg.AuthTokenTTL)
+
+	// Seeds the 4 bootstrap accounts into whichever userStore is active.
+	// Idempotent (UserStore.Seed never overwrites an existing row) — an
+	// admin's later edit to one of these (deactivate, re-role) survives a
+	// restart instead of being silently reset back to the .env defaults.
+	if err := auth.SeedBootstrapUsers(ctx, userStore, passwords, auth.BootstrapSeedsFromConfig(cfg)); err != nil {
+		if pool != nil {
+			pool.Close()
+		}
+		return nil, nil, err
+	}
+
+	authService := auth.NewService(userStore, passwords, tokens)
 
 	// Built before workItemService and passed in as its NotificationSink —
 	// notifications.Service satisfies that interface by having a matching
@@ -92,7 +111,8 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 	notificationService := notifications.NewService(notificationStore)
 	// Same shape as notificationService above — built first, passed in as
 	// workItemService's TeamAuthority, and kept as its own variable because
-	// the team handler below needs the same instance.
+	// the team handler and the users handler (OPS-067) both need the same
+	// instance.
 	teamService := teams.NewService(teamStore, membershipStore, supervisionStore)
 	workItemService := workitems.NewService(workItemStore, statusHistoryStore, assignmentStore, assignmentHistoryStore, notificationService, teamService, txRunner)
 
@@ -104,6 +124,7 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 
 	healthHandler := handlers.NewHealthHandler(cfg)
 	authHandler := handlers.NewAuthHandler(authService)
+	usersHandler := handlers.NewUsersHandler(authService, teamService)
 	accessHandler := handlers.NewAccessHandler()
 	workItemHandler := handlers.NewWorkItemHandler(workItemService, attachmentService)
 	attachmentHandler := handlers.NewAttachmentHandler(workItemService, attachmentService)
@@ -111,174 +132,266 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 	notificationHandler := handlers.NewNotificationHandler(notificationService)
 
 	mux.Handle("GET /health", healthHandler)
+
+	// auth/login never requires a token to begin with; auth/me and
+	// auth/change-password are the two routes OPS-067 deliberately leaves
+	// out of the RequirePasswordChangeCleared gate below — they're what
+	// let an account see itself and clear the flag in the first place.
 	mux.HandleFunc("POST /auth/login", authHandler.Login)
 	mux.Handle("GET /auth/me", httpmiddleware.RequireAuth(authService, http.HandlerFunc(authHandler.Me)))
+	mux.Handle("POST /auth/change-password", httpmiddleware.RequireAuth(authService, http.HandlerFunc(authHandler.ChangePassword)))
+
+	mux.Handle(
+		"POST /users",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(usersHandler.Create), auth.RoleAdmin),
+			),
+		),
+	)
+	mux.Handle(
+		"GET /users",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(usersHandler.List), auth.RoleAdmin, auth.RoleSupervisor),
+			),
+		),
+	)
+	mux.Handle(
+		"PATCH /users/{id}",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(usersHandler.Update), auth.RoleAdmin, auth.RoleSupervisor),
+			),
+		),
+	)
+	mux.Handle(
+		"POST /users/{id}/reset-password",
+		httpmiddleware.RequireAuth(
+			authService,
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(usersHandler.ResetPassword), auth.RoleAdmin, auth.RoleSupervisor),
+			),
+		),
+	)
+
 	mux.Handle(
 		"GET /access/admin",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(accessHandler.AdminOnly), auth.RoleAdmin),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(accessHandler.AdminOnly), auth.RoleAdmin),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /access/assignee",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(accessHandler.AssigneeOnly), auth.RoleAssignee),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(accessHandler.AssigneeOnly), auth.RoleAssignee),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /workitems",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Create), auth.RoleAdmin, auth.RoleSupervisor, auth.RoleRequester),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Create), auth.RoleAdmin, auth.RoleSupervisor, auth.RoleRequester),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /workitems",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.List), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor, auth.RoleRequester),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.List), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor, auth.RoleRequester),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetByID), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor, auth.RoleRequester),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetByID), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor, auth.RoleRequester),
+			),
 		),
 	)
 	mux.Handle(
 		"PATCH /workitems/{id}",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Update), auth.RoleAdmin, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Update), auth.RoleAdmin, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"PATCH /workitems/{id}/status",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ChangeStatus), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ChangeStatus), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /workitems/{id}/verify",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Verify), auth.RoleAdmin, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Verify), auth.RoleAdmin, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /workitems/{id}/flag",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Flag), auth.RoleAdmin, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Flag), auth.RoleAdmin, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}/history",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListStatusHistory), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListStatusHistory), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}/assignment-history",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListAssignmentHistory), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.ListAssignmentHistory), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /workitems/{id}/assignment",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Assign), auth.RoleAdmin, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.Assign), auth.RoleAdmin, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}/assignment",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetAssignment), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.GetAssignment), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /workitems/{id}/assignment/accept",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.AcceptAssignment), auth.RoleAssignee),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.AcceptAssignment), auth.RoleAssignee),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /workitems/{id}/assignment/decline",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.DeclineAssignment), auth.RoleAssignee),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(workItemHandler.DeclineAssignment), auth.RoleAssignee),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /teams",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.Create), auth.RoleAdmin),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.Create), auth.RoleAdmin),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /teams",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.List), auth.RoleAdmin),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.List), auth.RoleAdmin),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /teams/{id}/assignees",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.AddAssignee), auth.RoleAdmin),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.AddAssignee), auth.RoleAdmin),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /teams/{id}/supervisors",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.AddSupervisor), auth.RoleAdmin),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.AddSupervisor), auth.RoleAdmin),
+			),
 		),
 	)
 	mux.Handle(
 		"DELETE /teams/{id}/supervisors/{userId}",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.RemoveSupervisor), auth.RoleAdmin),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(teamHandler.RemoveSupervisor), auth.RoleAdmin),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /workitems/{id}/attachments",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.Upload), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.Upload), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /workitems/{id}/attachments",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.List), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(attachmentHandler.List), auth.RoleAdmin, auth.RoleAssignee, auth.RoleSupervisor),
+			),
 		),
 	)
 	mux.Handle(
 		"GET /notifications",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(notificationHandler.List), auth.RoleAdmin, auth.RoleAssignee),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(notificationHandler.List), auth.RoleAdmin, auth.RoleAssignee),
+			),
 		),
 	)
 	mux.Handle(
 		"POST /notifications/{id}/read",
 		httpmiddleware.RequireAuth(
 			authService,
-			httpmiddleware.RequireRoles(http.HandlerFunc(notificationHandler.MarkAsRead), auth.RoleAdmin, auth.RoleAssignee),
+			httpmiddleware.RequirePasswordChangeCleared(
+				httpmiddleware.RequireRoles(http.HandlerFunc(notificationHandler.MarkAsRead), auth.RoleAdmin, auth.RoleAssignee),
+			),
 		),
 	)
 
