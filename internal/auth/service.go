@@ -470,10 +470,21 @@ func (s Service) RequestPasswordReset(ctx context.Context, identifier string) er
 
 	hash := hashOTP(code)
 	expiresAt := s.now().Add(otpTTL)
-	user.PasswordResetCodeHash = &hash
-	user.PasswordResetCodeExpiresAt = &expiresAt
 
-	if _, err := s.users.Update(ctx, user); err != nil {
+	// UpdateAtomic, not a blind Update with the User snapshot fetched
+	// above — a review caught that a full-row Update here could race
+	// against a concurrent CompletePasswordReset: if that call finishes
+	// first and sets a new PasswordHash, this method's stale snapshot
+	// (taken before that happened) would silently revert it the moment
+	// this write lands. Mutating only the 2 reset-code fields inside
+	// UpdateAtomic means whatever PasswordHash is current at write time
+	// is the one that survives, regardless of which request gets there
+	// first.
+	if _, err := s.users.UpdateAtomic(ctx, user.ID, func(current User) (User, error) {
+		current.PasswordResetCodeHash = &hash
+		current.PasswordResetCodeExpiresAt = &expiresAt
+		return current, nil
+	}); err != nil {
 		return err
 	}
 
@@ -541,18 +552,21 @@ func (s Service) CompletePasswordReset(ctx context.Context, identifier, code, ne
 		return err
 	}
 
-	// Re-fetched rather than reusing the User struct from above: that
-	// copy predates consumeOTP's atomic mutation (code cleared, attempt
-	// counter reset), and a blind Update with the stale copy would
-	// silently undo that write.
-	current, ok := s.users.FindByID(ctx, user.ID)
-	if !ok {
-		return ErrUserNotFound
-	}
-
-	current.PasswordHash = passwordHash
-
-	_, err = s.users.Update(ctx, current)
+	// UpdateAtomic, not FindByID-then-Update — a review caught that even
+	// a *fresh* re-fetch here still leaves a window: a concurrent
+	// RequestPasswordReset could persist and email a brand new code after
+	// this re-fetch but before this write commits, and a blind full-row
+	// Update would silently erase that new code the moment it lands
+	// (reverting it to the nil consumeOTP just set, from a snapshot that
+	// predates the new code existing at all). Mutating only PasswordHash
+	// inside UpdateAtomic means that race is no longer possible — the
+	// worst case left is the narrow, user-visible one CodeRabbit called
+	// out: a reset code requested in that exact window needs a fresh
+	// forgot-password call, not a silently-reverted field.
+	_, err = s.users.UpdateAtomic(ctx, user.ID, func(current User) (User, error) {
+		current.PasswordHash = passwordHash
+		return current, nil
+	})
 	return err
 }
 
