@@ -49,6 +49,22 @@ func (s *MemoryUserStore) FindByID(_ context.Context, id string) (User, bool) {
 	return User{}, false
 }
 
+// FindByGoogleSubjectID backs OPS-068a's repeat-login path — find the
+// existing account for a Google identity rather than creating a duplicate
+// on every login.
+func (s *MemoryUserStore) FindByGoogleSubjectID(_ context.Context, subjectID string) (User, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, user := range s.users {
+		if user.GoogleSubjectID != nil && *user.GoogleSubjectID == subjectID {
+			return user, true
+		}
+	}
+
+	return User{}, false
+}
+
 func (s *MemoryUserStore) Create(_ context.Context, user User) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -56,6 +72,16 @@ func (s *MemoryUserStore) Create(_ context.Context, user User) (User, error) {
 	normalized := normalizeIdentifier(user.Identifier)
 	for _, existing := range s.users {
 		if existing.Identifier == normalized {
+			return User{}, ErrIdentifierTaken
+		}
+		// A review caught that this store never checked GoogleSubjectID
+		// uniqueness — PostgresUserStore has a real UNIQUE constraint on
+		// the column, but this one had no equivalent, so two concurrent
+		// first-logins for the same brand-new Google identity (both
+		// passing FindByGoogleSubjectID before either Create commits)
+		// could create two accounts sharing one Google subject, breaking
+		// FindByGoogleSubjectID's single-result assumption.
+		if existing.GoogleSubjectID != nil && user.GoogleSubjectID != nil && *existing.GoogleSubjectID == *user.GoogleSubjectID {
 			return User{}, ErrIdentifierTaken
 		}
 	}

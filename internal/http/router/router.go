@@ -103,6 +103,16 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 
 	authService := auth.NewService(userStore, passwords, tokens)
 
+	// googleClient stays nil unless Google OAuth is actually configured
+	// (OPS-068a) — the same "absent config means the feature isn't wired
+	// up" pattern cfg.DatabaseURL already uses. Checked here, once, rather
+	// than at every call site.
+	var googleClient auth.GoogleOAuthClient
+	googleOAuthEnabled := cfg.GoogleOAuthClientID != ""
+	if googleOAuthEnabled {
+		googleClient = auth.NewOAuth2GoogleClient(cfg.GoogleOAuthClientID, cfg.GoogleOAuthClientSecret, cfg.GoogleOAuthRedirectURL)
+	}
+
 	// Built before workItemService and passed in as its NotificationSink —
 	// notifications.Service satisfies that interface by having a matching
 	// Notify method, nothing more is needed to wire it in. Kept as its
@@ -123,7 +133,7 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 	attachmentService := attachments.NewService(attachmentMetaStore, attachmentDiskStorage)
 
 	healthHandler := handlers.NewHealthHandler(cfg)
-	authHandler := handlers.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandler(authService, googleClient)
 	usersHandler := handlers.NewUsersHandler(authService, teamService)
 	accessHandler := handlers.NewAccessHandler()
 	workItemHandler := handlers.NewWorkItemHandler(workItemService, attachmentService)
@@ -140,6 +150,16 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 	mux.HandleFunc("POST /auth/login", authHandler.Login)
 	mux.Handle("GET /auth/me", httpmiddleware.RequireAuth(authService, http.HandlerFunc(authHandler.Me)))
 	mux.Handle("POST /auth/change-password", httpmiddleware.RequireAuth(authService, http.HandlerFunc(authHandler.ChangePassword)))
+
+	// Google OAuth signup/login (OPS-068a) — requester-only, additive
+	// alongside the password login above, which stays untouched for the
+	// other 3 roles. Only mounted when actually configured, same "absent
+	// config, route doesn't exist" pattern as everything else gated on an
+	// optional env var in this router.
+	if googleOAuthEnabled {
+		mux.HandleFunc("GET /auth/google/login", authHandler.GoogleLogin)
+		mux.HandleFunc("GET /auth/google/callback", authHandler.GoogleCallback)
+	}
 
 	mux.Handle(
 		"POST /users",

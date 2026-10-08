@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1577,6 +1578,72 @@ func newTestRouter(t *testing.T) http.Handler {
 	}
 
 	return handler
+}
+
+// TestGoogleOAuthRoutesAbsentWhenNotConfigured proves the "absent config,
+// route doesn't exist" pattern for OPS-068a: newTestRouter's config never
+// sets GoogleOAuthClientID, matching how every zero-setup `go run` behaves
+// before anyone configures Google OAuth.
+func TestGoogleOAuthRoutesAbsentWhenNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/login", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d when Google OAuth isn't configured, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+// TestGoogleOAuthLoginRedirectsWhenConfigured proves the route exists and
+// redirects to Google once GoogleOAuthClientID is set — using a fake
+// client ID, since this only checks the redirect happens, not that a real
+// exchange with Google succeeds (that needs a real browser round trip,
+// verified by hand).
+func TestGoogleOAuthLoginRedirectsWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	handler, _, err := New(context.Background(), config.Config{
+		Port:                           "8080",
+		AppEnv:                         "test",
+		AuthTokenSecret:                "test-secret",
+		AuthTokenTTL:                   time.Hour,
+		BootstrapAdminIdentifier:       "admin@ops.local",
+		BootstrapAdminPassword:         "ChangeMe123!",
+		BootstrapAdminDisplayName:      "Platform Admin",
+		BootstrapAssigneeIdentifier:    "assignee@ops.local",
+		BootstrapAssigneePassword:      "ChangeMe123!",
+		BootstrapAssigneeDisplayName:   "Assigned Worker",
+		BootstrapSupervisorIdentifier:  "supervisor@ops.local",
+		BootstrapSupervisorPassword:    "ChangeMe123!",
+		BootstrapSupervisorDisplayName: "Team Supervisor",
+		BootstrapRequesterIdentifier:   "requester@ops.local",
+		BootstrapRequesterPassword:     "ChangeMe123!",
+		BootstrapRequesterDisplayName:  "Requesting Customer",
+		AttachmentUploadDir:            t.TempDir(),
+		GoogleOAuthClientID:            "test-client-id",
+		GoogleOAuthClientSecret:        "test-client-secret",
+		GoogleOAuthRedirectURL:         "http://localhost:8080/auth/google/callback",
+	})
+	if err != nil {
+		t.Fatalf("expected router to be created, got error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/login", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, rec.Code)
+	}
+
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "test-client-id") {
+		t.Fatalf("expected redirect location to reference the configured client id, got %s", location)
+	}
 }
 
 func loginAndReturnToken(t *testing.T, handler http.Handler, identifier, password string) string {

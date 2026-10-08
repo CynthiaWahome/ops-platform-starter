@@ -75,6 +75,7 @@ func SeedBootstrapUsers(ctx context.Context, store UserStore, passwords Password
 			PasswordHash: passwordHash,
 			Roles:        append([]Role(nil), seed.Roles...),
 			IsActive:     true,
+			AuthProvider: AuthProviderLocal,
 		}); err != nil {
 			return err
 		}

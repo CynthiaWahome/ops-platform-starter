@@ -18,7 +18,7 @@ func TestAuthHandlerLoginReturnsToken(t *testing.T) {
 	t.Parallel()
 
 	service := newTestAuthService(t)
-	handler := NewAuthHandler(service)
+	handler := NewAuthHandler(service, nil)
 
 	body := bytes.NewBufferString(`{"identifier":"admin@ops.local","password":"ChangeMe123!"}`)
 	req := httptest.NewRequest(http.MethodPost, "/auth/login", body)
@@ -44,7 +44,7 @@ func TestAuthHandlerMeReturnsPrincipalFromContext(t *testing.T) {
 	t.Parallel()
 
 	service := newTestAuthService(t)
-	handler := NewAuthHandler(service)
+	handler := NewAuthHandler(service, nil)
 
 	session, err := service.Login(t.Context(), "admin@ops.local", "ChangeMe123!")
 	if err != nil {

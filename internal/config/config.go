@@ -29,6 +29,16 @@ type Config struct {
 	// stores every test and every zero-setup `go run` has always used.
 	// Set DATABASE_URL to opt into real persistence (OPS-048).
 	DatabaseURL string
+	// GoogleOAuthClientID, GoogleOAuthClientSecret and
+	// GoogleOAuthRedirectURL (OPS-068a) are empty by default — router.New
+	// only wires up GET /auth/google/login and /auth/google/callback when
+	// the client ID is set, the same "absent env var means the feature
+	// isn't configured" pattern DatabaseURL already uses. The Client ID is
+	// not secret (Google's own docs: it's meant to be public, embedded in
+	// redirect URLs); only the Client Secret is.
+	GoogleOAuthClientID     string
+	GoogleOAuthClientSecret string
+	GoogleOAuthRedirectURL  string
 }
 
 func Load() Config {
@@ -58,8 +68,11 @@ func Load() Config {
 			"BOOTSTRAP_REQUESTER_DISPLAY_NAME",
 			"Requesting Customer",
 		),
-		AttachmentUploadDir: getEnv("ATTACHMENT_UPLOAD_DIR", "uploads"),
-		DatabaseURL:         getEnv("DATABASE_URL", ""),
+		AttachmentUploadDir:     getEnv("ATTACHMENT_UPLOAD_DIR", "uploads"),
+		DatabaseURL:             getEnv("DATABASE_URL", ""),
+		GoogleOAuthClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
+		GoogleOAuthClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
+		GoogleOAuthRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", ""),
 	}
 }
 
