@@ -119,6 +119,30 @@ func (s *MemoryUserStore) Update(_ context.Context, user User) (User, error) {
 	return User{}, ErrUserNotFound
 }
 
+// UpdateAtomic holds the store-wide lock for the entire find-mutate-write
+// sequence, unlike calling FindByID and Update separately — see the
+// UserStore interface doc comment for why that matters (OPS-068b's OTP
+// consumption race).
+func (s *MemoryUserStore) UpdateAtomic(_ context.Context, id string, mutate func(User) (User, error)) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.users {
+		if existing.ID == id {
+			updated, err := mutate(existing)
+			if err != nil {
+				return User{}, err
+			}
+
+			s.users[i] = updated
+
+			return updated, nil
+		}
+	}
+
+	return User{}, ErrUserNotFound
+}
+
 func (s *MemoryUserStore) Seed(_ context.Context, user User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -25,6 +25,18 @@ type UserStore interface {
 	// Update persists an in-place edit (role, active flag, password hash,
 	// requires-password-change flag) to an existing row, matched by ID.
 	Update(ctx context.Context, user User) (User, error)
+	// UpdateAtomic finds the row by id and hands it to mutate, persisting
+	// whatever mutate returns — the whole find-mutate-write sequence
+	// under one lock (MemoryUserStore) or one row lock inside a
+	// transaction (PostgresUserStore), so no other caller's
+	// find-mutate-write can interleave in between. Added specifically for
+	// OTP consumption (OPS-068b): a plain Find-then-separate-Update left
+	// a real race — two concurrent requests could both read the same
+	// not-yet-cleared code as valid before either committed, letting a
+	// single-use code be consumed twice, and concurrent wrong guesses
+	// could each compute "attempts+1" off the same stale read, losing
+	// increments and defeating the lockout.
+	UpdateAtomic(ctx context.Context, id string, mutate func(User) (User, error)) (User, error)
 	// Seed inserts user if no row with its exact ID exists yet, and is a
 	// no-op otherwise — see SeedBootstrapUsers. Unlike Create, the caller
 	// supplies the ID (the 4 bootstrap accounts need fixed, predictable
@@ -426,25 +438,16 @@ func (s Service) SignUp(ctx context.Context, input SignUpInput) (Session, error)
 // CompletePasswordReset: otpMaxAttempts wrong guesses locks OTP flows for
 // otpLockoutDuration.
 func (s Service) VerifyEmail(ctx context.Context, userID, code string) error {
-	user, ok := s.users.FindByID(ctx, userID)
-	if !ok {
-		return ErrUserNotFound
-	}
-
-	if locked, err := s.checkAndRecordOTPAttempt(ctx, user, code, user.EmailVerificationCodeHash, user.EmailVerificationCodeExpiresAt); err != nil {
-		return err
-	} else if !locked {
-		return ErrInvalidOrExpiredCode
-	}
-
-	user.EmailVerified = true
-	user.EmailVerificationCodeHash = nil
-	user.EmailVerificationCodeExpiresAt = nil
-	user.FailedOTPAttempts = 0
-	user.OTPLockedUntil = nil
-
-	_, err := s.users.Update(ctx, user)
-	return err
+	return s.consumeOTP(ctx, userID, code,
+		func(u User) (*string, *time.Time) {
+			return u.EmailVerificationCodeHash, u.EmailVerificationCodeExpiresAt
+		},
+		func(u *User) {
+			u.EmailVerified = true
+			u.EmailVerificationCodeHash = nil
+			u.EmailVerificationCodeExpiresAt = nil
+		},
+	)
 }
 
 // RequestPasswordReset always succeeds from the caller's point of view —
@@ -474,17 +477,25 @@ func (s Service) RequestPasswordReset(ctx context.Context, identifier string) er
 		return err
 	}
 
-	// The Send error is deliberately swallowed, not returned — this
-	// method's whole contract is "never reveal whether identifier belongs
-	// to an account." Propagating a send failure as an error would do
-	// exactly that: the handler would return 500 for an existing account
-	// whose email happens to fail, and 200 for every nonexistent one,
-	// which is itself a usable enumeration oracle. Once there's
+	// Dispatched asynchronously and the Send error deliberately swallowed
+	// — a review caught that a synchronous send here made an existing
+	// account's response measurably slower than a nonexistent one's,
+	// which is itself a timing side-channel leaking account existence
+	// even though the response body never does (this method's whole
+	// contract). Detached from ctx with its own bounded timeout, since
+	// ctx is cancelled the moment the HTTP handler returns — the send
+	// still has to be able to complete after that. Once there's
 	// server-side logging (issue #72), that's the right place to surface
 	// a real delivery failure — silently to an operator, never to the
 	// caller.
-	_ = s.email.Send(ctx, user.Identifier, "Reset your password",
-		fmt.Sprintf("Your password reset code is %s. It expires in %d minutes.", code, int(otpTTL.Minutes())))
+	recipient := user.Identifier
+	go func() {
+		sendCtx, cancel := context.WithTimeout(context.Background(), emailSendTimeout)
+		defer cancel()
+
+		_ = s.email.Send(sendCtx, recipient, "Reset your password",
+			fmt.Sprintf("Your password reset code is %s. It expires in %d minutes.", code, int(otpTTL.Minutes())))
+	}()
 
 	return nil
 }
@@ -493,16 +504,31 @@ func (s Service) RequestPasswordReset(ctx context.Context, identifier string) er
 // on success, sets newPassword. Unauthenticated by design (this is the
 // one account-recovery path for someone who, by definition, might not be
 // able to log in) — the code itself is the proof of identity.
+//
+// The code is consumed (atomically, via consumeOTP) before newPassword is
+// validated, deliberately in that order — not the other way around. A
+// review caught that validating the password first would let an attacker
+// send unlimited code guesses paired with a deliberately-malformed
+// password (always failing fast, before ever touching the attempt
+// counter), brute-forcing the code completely free of the lockout this
+// slice exists to enforce. The accepted tradeoff: a correct code paired
+// with a bad password still gets consumed, so fixing a password typo
+// needs a fresh forgot-password call rather than a retry with the same
+// code — a minor UX cost for closing a real rate-limit bypass.
 func (s Service) CompletePasswordReset(ctx context.Context, identifier, code, newPassword string) error {
 	user, ok := s.users.FindByIdentifier(ctx, identifier)
 	if !ok {
 		return ErrInvalidOrExpiredCode
 	}
 
-	if locked, err := s.checkAndRecordOTPAttempt(ctx, user, code, user.PasswordResetCodeHash, user.PasswordResetCodeExpiresAt); err != nil {
+	if err := s.consumeOTP(ctx, user.ID, code,
+		func(u User) (*string, *time.Time) { return u.PasswordResetCodeHash, u.PasswordResetCodeExpiresAt },
+		func(u *User) {
+			u.PasswordResetCodeHash = nil
+			u.PasswordResetCodeExpiresAt = nil
+		},
+	); err != nil {
 		return err
-	} else if !locked {
-		return ErrInvalidOrExpiredCode
 	}
 
 	trimmedNew := strings.TrimSpace(newPassword)
@@ -515,46 +541,83 @@ func (s Service) CompletePasswordReset(ctx context.Context, identifier, code, ne
 		return err
 	}
 
-	user.PasswordHash = passwordHash
-	user.PasswordResetCodeHash = nil
-	user.PasswordResetCodeExpiresAt = nil
-	user.FailedOTPAttempts = 0
-	user.OTPLockedUntil = nil
+	// Re-fetched rather than reusing the User struct from above: that
+	// copy predates consumeOTP's atomic mutation (code cleared, attempt
+	// counter reset), and a blind Update with the stale copy would
+	// silently undo that write.
+	current, ok := s.users.FindByID(ctx, user.ID)
+	if !ok {
+		return ErrUserNotFound
+	}
 
-	_, err = s.users.Update(ctx, user)
+	current.PasswordHash = passwordHash
+
+	_, err = s.users.Update(ctx, current)
 	return err
 }
 
-// checkAndRecordOTPAttempt is the one piece of logic both OTP flows
-// share: is the account currently locked out, is a code even outstanding,
-// does it match and hasn't expired — and on a wrong guess, record the
-// attempt and lock the account out once otpMaxAttempts is reached. The
-// bool return is whether the code was valid; the caller still owns what
-// happens next on success (VerifyEmail vs CompletePasswordReset clear and
-// apply different fields).
-func (s Service) checkAndRecordOTPAttempt(ctx context.Context, user User, code string, storedHash *string, expiresAt *time.Time) (bool, error) {
+// otpCheckResult carries consumeOTP's mutate-closure outcome back to the
+// caller — valid is whether the code matched; locked is set when the
+// account was already in its lockout window (checked, and left
+// unmodified, inside the same atomic operation rather than as a separate
+// read beforehand, which itself would have been racy).
+type otpCheckResult struct {
+	valid  bool
+	locked bool
+}
+
+// consumeOTP is the one piece of logic both OTP flows share: is the
+// account currently locked out, does the code match and hasn't expired —
+// and, atomically in the same store operation, either apply onSuccess (on
+// a correct code) or record the failed attempt and lock the account out
+// once otpMaxAttempts is reached (on a wrong one). Everything happens
+// inside UserStore.UpdateAtomic's single find-mutate-write, closing a
+// real race a review caught: the previous Find-then-separate-Update
+// design let two concurrent requests both read the same not-yet-cleared
+// code as valid before either committed (a single-use code consumed
+// twice), and let concurrent wrong guesses each compute "attempts+1" off
+// the same stale read (losing increments, defeating the lockout).
+func (s Service) consumeOTP(ctx context.Context, userID, code string, getCode func(User) (*string, *time.Time), onSuccess func(*User)) error {
 	now := s.now()
+	var result otpCheckResult
 
-	if user.OTPLockedUntil != nil && now.Before(*user.OTPLockedUntil) {
-		return false, ErrTooManyAttempts
+	_, err := s.users.UpdateAtomic(ctx, userID, func(user User) (User, error) {
+		if user.OTPLockedUntil != nil && now.Before(*user.OTPLockedUntil) {
+			result.locked = true
+			return user, nil
+		}
+
+		storedHash, expiresAt := getCode(user)
+		valid := storedHash != nil && expiresAt != nil && now.Before(*expiresAt) && verifyOTP(code, *storedHash)
+
+		if valid {
+			result.valid = true
+			onSuccess(&user)
+			user.FailedOTPAttempts = 0
+			user.OTPLockedUntil = nil
+			return user, nil
+		}
+
+		user.FailedOTPAttempts++
+		if user.FailedOTPAttempts >= otpMaxAttempts {
+			lockedUntil := now.Add(otpLockoutDuration)
+			user.OTPLockedUntil = &lockedUntil
+		}
+
+		return user, nil
+	})
+	if err != nil {
+		return err
 	}
 
-	valid := storedHash != nil && expiresAt != nil && now.Before(*expiresAt) && verifyOTP(code, *storedHash)
-	if valid {
-		return true, nil
+	if result.locked {
+		return ErrTooManyAttempts
+	}
+	if !result.valid {
+		return ErrInvalidOrExpiredCode
 	}
 
-	user.FailedOTPAttempts++
-	if user.FailedOTPAttempts >= otpMaxAttempts {
-		lockedUntil := now.Add(otpLockoutDuration)
-		user.OTPLockedUntil = &lockedUntil
-	}
-
-	if _, err := s.users.Update(ctx, user); err != nil {
-		return false, err
-	}
-
-	return false, nil
+	return nil
 }
 
 func isKnownRole(role Role) bool {

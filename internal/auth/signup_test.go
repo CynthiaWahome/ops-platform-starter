@@ -13,7 +13,11 @@ import (
 // fakeEmailSender records every call instead of making a real call to
 // Resend or SMTP — lets these tests inspect the actual OTP sent, since
 // the service only ever hands it to EmailSender, never returns it in an
-// API response.
+// API response. sent is buffered generously: RequestPasswordReset
+// dispatches its Send asynchronously (OPS-068b, a review caught a timing
+// side-channel in the synchronous version), so a test proving something
+// about that email has to wait for it via waitForSend rather than reading
+// last() the instant the service call returns.
 type fakeEmailSender struct {
 	mu   sync.Mutex
 	sent []sentEmail
@@ -35,6 +39,7 @@ func (f *fakeEmailSender) Send(_ context.Context, to, subject, body string) erro
 	}
 
 	f.sent = append(f.sent, sentEmail{To: to, Subject: subject, Body: body})
+
 	return nil
 }
 
@@ -43,6 +48,31 @@ func (f *fakeEmailSender) last() sentEmail {
 	defer f.mu.Unlock()
 
 	return f.sent[len(f.sent)-1]
+}
+
+func (f *fakeEmailSender) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.sent)
+}
+
+// waitForSendCount blocks until at least n emails have been recorded, or
+// fails the test after a short timeout — needed because
+// RequestPasswordReset's send is dispatched in its own goroutine now, so
+// nothing guarantees it has run yet the instant the service call returns.
+func waitForSendCount(t *testing.T, sender *fakeEmailSender, n int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sender.count() >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatalf("expected at least %d email(s) sent within the timeout, got %d", n, sender.count())
 }
 
 func newTestSignupService(t *testing.T) (Service, *fakeEmailSender) {
@@ -360,6 +390,12 @@ func TestCompletePasswordResetWithCorrectCodeSucceeds(t *testing.T) {
 		t.Fatalf("expected reset request to succeed, got error: %v", err)
 	}
 
+	// Waiting for 2, not 1 — SignUp above already sent the verification
+	// email synchronously; this is the 2nd. The reset send itself is
+	// dispatched asynchronously (deliberately — see RequestPasswordReset's
+	// own doc comment on the timing side-channel this closes), so nothing
+	// guarantees it has run the instant the call above returns.
+	waitForSendCount(t, sender, 2)
 	code := extractOTP(sender.last().Body)
 
 	if err := service.CompletePasswordReset(context.Background(), "reset-me@gmail.com", code, "a-brand-new-password"); err != nil {
@@ -400,5 +436,63 @@ func TestCompletePasswordResetLocksOutAfterTooManyAttempts(t *testing.T) {
 	err = service.CompletePasswordReset(context.Background(), "reset-lockout@gmail.com", "000000", "irrelevant-password")
 	if !errors.Is(err, ErrTooManyAttempts) {
 		t.Fatalf("expected ErrTooManyAttempts, got %v", err)
+	}
+}
+
+// TestVerifyEmailConcurrentRequestsWithSameCodeOnlyOneSucceeds is the
+// actual proof for the race a review caught: the old Find-then-separate-
+// Update design let two concurrent requests both read the same
+// not-yet-cleared code as valid before either committed, so the same
+// single-use code could succeed twice. Fires otpMaxAttempts-1 concurrent
+// VerifyEmail calls with the one real, correct code (kept under the
+// lockout threshold so a legitimate race isn't masked by hitting
+// ErrTooManyAttempts first) and asserts exactly one wins.
+func TestVerifyEmailConcurrentRequestsWithSameCodeOnlyOneSucceeds(t *testing.T) {
+	t.Parallel()
+
+	service, sender := newTestSignupService(t)
+
+	session, err := service.SignUp(context.Background(), SignUpInput{
+		Identifier:  "concurrent-verify@gmail.com",
+		Password:    "a-real-password",
+		DisplayName: "Concurrent Verify",
+	})
+	if err != nil {
+		t.Fatalf("expected signup to succeed, got error: %v", err)
+	}
+
+	waitForSendCount(t, sender, 1)
+	code := extractOTP(sender.last().Body)
+
+	const concurrentAttempts = otpMaxAttempts - 1
+
+	var wg sync.WaitGroup
+	results := make([]error, concurrentAttempts)
+
+	for i := range concurrentAttempts {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = service.VerifyEmail(context.Background(), session.Principal.UserID, code)
+		}(i)
+	}
+	wg.Wait()
+
+	successes := 0
+	for _, result := range results {
+		if result == nil {
+			successes++
+		} else if !errors.Is(result, ErrInvalidOrExpiredCode) {
+			t.Fatalf("expected either success or ErrInvalidOrExpiredCode, got %v", result)
+		}
+	}
+
+	if successes != 1 {
+		t.Fatalf("expected exactly 1 of %d concurrent requests with the same code to succeed, got %d", concurrentAttempts, successes)
+	}
+
+	user, ok := service.users.FindByID(context.Background(), session.Principal.UserID)
+	if !ok || !user.EmailVerified {
+		t.Fatal("expected the account to end up verified after the race")
 	}
 }
