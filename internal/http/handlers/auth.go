@@ -163,6 +163,134 @@ func (h AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type signUpRequest struct {
+	Identifier  string `json:"identifier"`
+	Password    string `json:"password"`
+	DisplayName string `json:"displayName"`
+}
+
+// SignUp is the requester self-service path (OPS-068b) — the caller
+// chooses their own password, and a verification OTP is emailed
+// immediately. Only mounted when an email provider is configured.
+func (h AuthHandler) SignUp(w http.ResponseWriter, r *http.Request) {
+	var input signUpRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	session, err := h.service.SignUp(r.Context(), auth.SignUpInput{
+		Identifier:  input.Identifier,
+		Password:    input.Password,
+		DisplayName: input.DisplayName,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidUserInput):
+			writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid identifier, password, or display name"})
+		case errors.Is(err, auth.ErrIdentifierTaken):
+			writeJSON(w, http.StatusConflict, errorResponse{Message: err.Error()})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to complete signup"})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, session)
+}
+
+type verifyEmailRequest struct {
+	Code string `json:"code"`
+}
+
+// VerifyEmail checks the caller's own account against a 6-digit OTP sent
+// on signup (OPS-068b) — authenticated, since there's a session from
+// SignUp already in hand by the time this is called.
+func (h AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var input verifyEmailRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	principal, ok := httpmiddleware.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "authentication required"})
+		return
+	}
+
+	if err := h.service.VerifyEmail(r.Context(), principal.UserID, input.Code); err != nil {
+		writeOTPError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type forgotPasswordRequest struct {
+	Identifier string `json:"identifier"`
+}
+
+// ForgotPassword always returns the same generic response whether or not
+// identifier belongs to an account — never reveals account existence
+// (OPS-068b).
+func (h AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var input forgotPasswordRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	if err := h.service.RequestPasswordReset(r.Context(), input.Identifier); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to process request"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "if an account exists, a reset code has been sent"})
+}
+
+type resetPasswordWithCodeRequest struct {
+	Identifier  string `json:"identifier"`
+	Code        string `json:"code"`
+	NewPassword string `json:"newPassword"`
+}
+
+// ResetPassword (the self-service, token-based one — distinct from
+// ChangePassword above and from /users/:id/reset-password's
+// admin-initiated flow, #67) completes a forgot-password request with the
+// emailed OTP. Unauthenticated by design: the code itself is the proof of
+// identity for someone who, by definition, might not be able to log in.
+func (h AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var input resetPasswordWithCodeRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "invalid request payload"})
+		return
+	}
+
+	if err := h.service.CompletePasswordReset(r.Context(), input.Identifier, input.Code, input.NewPassword); err != nil {
+		writeOTPError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeOTPError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, auth.ErrTooManyAttempts):
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{Message: err.Error()})
+	case errors.Is(err, auth.ErrInvalidOrExpiredCode):
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+	case errors.Is(err, auth.ErrInvalidUserInput):
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "new password must be at least 8 characters"})
+	case errors.Is(err, auth.ErrUserNotFound):
+		writeJSON(w, http.StatusNotFound, errorResponse{Message: err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Message: "unable to complete request"})
+	}
+}
+
 func (h AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	principal, ok := httpmiddleware.PrincipalFromContext(r.Context())
 	if !ok {

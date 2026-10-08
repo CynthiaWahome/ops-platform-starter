@@ -39,6 +39,19 @@ type Config struct {
 	GoogleOAuthClientID     string
 	GoogleOAuthClientSecret string
 	GoogleOAuthRedirectURL  string
+	// ResendAPIKey/ResendFrom and the SMTP* fields back OPS-068b's
+	// signup/verification/reset email delivery. router.New picks Resend
+	// if ResendAPIKey is set, else SMTP if SMTPHost is set, else neither —
+	// in which case POST /auth/signup and friends simply aren't mounted,
+	// same pattern as Google OAuth above. This is a startup-time choice,
+	// not a runtime failover between the two.
+	ResendAPIKey string
+	ResendFrom   string
+	SMTPHost     string
+	SMTPPort     string
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
 }
 
 func Load() Config {
@@ -73,6 +86,13 @@ func Load() Config {
 		GoogleOAuthClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleOAuthClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 		GoogleOAuthRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", ""),
+		ResendAPIKey:            getEnv("RESEND_API_KEY", ""),
+		ResendFrom:              getEnv("RESEND_FROM", "onboarding@resend.dev"),
+		SMTPHost:                getEnv("SMTP_HOST", ""),
+		SMTPPort:                getEnv("SMTP_PORT", "587"),
+		SMTPUsername:            getEnv("SMTP_USERNAME", ""),
+		SMTPPassword:            getEnv("SMTP_PASSWORD", ""),
+		SMTPFrom:                getEnv("SMTP_FROM", ""),
 	}
 }
 

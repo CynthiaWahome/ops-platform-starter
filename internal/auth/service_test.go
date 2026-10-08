@@ -77,5 +77,5 @@ func newTestService(t *testing.T) Service {
 			return time.Date(2026, time.July, 31, 7, 0, 0, 0, time.UTC)
 		})
 
-	return NewService(users, passwords, tokens)
+	return NewService(users, passwords, tokens, nil)
 }

@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 )
 
 // UserStore is the persistence seam for user accounts. MemoryUserStore and
@@ -23,6 +25,18 @@ type UserStore interface {
 	// Update persists an in-place edit (role, active flag, password hash,
 	// requires-password-change flag) to an existing row, matched by ID.
 	Update(ctx context.Context, user User) (User, error)
+	// UpdateAtomic finds the row by id and hands it to mutate, persisting
+	// whatever mutate returns — the whole find-mutate-write sequence
+	// under one lock (MemoryUserStore) or one row lock inside a
+	// transaction (PostgresUserStore), so no other caller's
+	// find-mutate-write can interleave in between. Added specifically for
+	// OTP consumption (OPS-068b): a plain Find-then-separate-Update left
+	// a real race — two concurrent requests could both read the same
+	// not-yet-cleared code as valid before either committed, letting a
+	// single-use code be consumed twice, and concurrent wrong guesses
+	// could each compute "attempts+1" off the same stale read, losing
+	// increments and defeating the lockout.
+	UpdateAtomic(ctx context.Context, id string, mutate func(User) (User, error)) (User, error)
 	// Seed inserts user if no row with its exact ID exists yet, and is a
 	// no-op otherwise — see SeedBootstrapUsers. Unlike Create, the caller
 	// supplies the ID (the 4 bootstrap accounts need fixed, predictable
@@ -36,13 +50,22 @@ type Service struct {
 	users     UserStore
 	passwords PasswordManager
 	tokens    TokenManager
+	// email is nil unless an EmailSender was actually configured
+	// (OPS-068b) — SignUp, RequestPasswordReset etc. are only ever called
+	// from routes router.go mounts solely when email is configured, so
+	// nil here would be a wiring bug, not a real-world state to guard
+	// against defensively.
+	email EmailSender
+	now   func() time.Time
 }
 
-func NewService(users UserStore, passwords PasswordManager, tokens TokenManager) Service {
+func NewService(users UserStore, passwords PasswordManager, tokens TokenManager, email EmailSender) Service {
 	return Service{
 		users:     users,
 		passwords: passwords,
 		tokens:    tokens,
+		email:     email,
+		now:       time.Now,
 	}
 }
 
@@ -131,6 +154,7 @@ func (s Service) CreateUser(ctx context.Context, actingUserID string, input Crea
 		RequiresPasswordChange: true,
 		CreatedByUserID:        actingUserID,
 		AuthProvider:           AuthProviderLocal,
+		EmailVerified:          true,
 	})
 	if err != nil {
 		return User{}, "", err
@@ -301,6 +325,9 @@ func (s Service) LoginWithGoogle(ctx context.Context, identity GoogleIdentity) (
 		IsActive:        true,
 		AuthProvider:    AuthProviderGoogle,
 		GoogleSubjectID: &subjectID,
+		// Google already verified this email as part of its own signup
+		// flow — re-verifying it here would be redundant and bad UX.
+		EmailVerified: true,
 	})
 	if err != nil {
 		return Session{}, err
@@ -324,6 +351,289 @@ func (s Service) issueSession(user User) (Session, error) {
 	}, nil
 }
 
+func (s Service) WithClock(now func() time.Time) Service {
+	s.now = now
+	return s
+}
+
+// SignUpInput is what a requester supplies to self-service signup
+// (OPS-068b) — unlike CreateUserInput, the caller chooses their own
+// password and the role is always RoleRequester; the other 3 roles are
+// always admin-provisioned (#67), never self-signup.
+type SignUpInput struct {
+	Identifier  string
+	Password    string
+	DisplayName string
+}
+
+// SignUp creates a requester account with the caller's own chosen
+// password, emails a 6-digit verification OTP, and returns a session —
+// the account can log in and view immediately, but
+// middleware.RequireVerifiedEmailForRequester blocks creating a work
+// item until VerifyEmail succeeds.
+func (s Service) SignUp(ctx context.Context, input SignUpInput) (Session, error) {
+	identifier := normalizeIdentifier(input.Identifier)
+	displayName := strings.TrimSpace(input.DisplayName)
+
+	if identifier == "" || displayName == "" {
+		return Session{}, ErrInvalidUserInput
+	}
+
+	trimmedPassword := strings.TrimSpace(input.Password)
+	if len(trimmedPassword) < 8 || len(input.Password) > 72 {
+		return Session{}, ErrInvalidUserInput
+	}
+
+	if _, exists := s.users.FindByIdentifier(ctx, identifier); exists {
+		return Session{}, ErrIdentifierTaken
+	}
+
+	passwordHash, err := s.passwords.Hash(input.Password)
+	if err != nil {
+		return Session{}, err
+	}
+
+	// Generate and send the verification code BEFORE persisting the
+	// account — a review caught that doing this the other way around
+	// (create first, then send) left an orphaned account on any send
+	// failure: the row existed, requires EmailVerified forever, and its
+	// one-time code — had Update already written it — could never reach
+	// anyone, since the email that was supposed to carry it never
+	// arrived. Generating the code needs no user ID, so there's no
+	// reason to create the row first.
+	code, err := GenerateOTP()
+	if err != nil {
+		return Session{}, err
+	}
+
+	if err := s.email.Send(ctx, identifier, "Verify your email",
+		fmt.Sprintf("Your verification code is %s. It expires in %d minutes.", code, int(otpTTL.Minutes()))); err != nil {
+		return Session{}, err
+	}
+
+	hash := hashOTP(code)
+	expiresAt := s.now().Add(otpTTL)
+
+	created, err := s.users.Create(ctx, User{
+		Identifier:                     identifier,
+		DisplayName:                    displayName,
+		PasswordHash:                   passwordHash,
+		Roles:                          []Role{RoleRequester},
+		IsActive:                       true,
+		AuthProvider:                   AuthProviderLocal,
+		EmailVerified:                  false,
+		EmailVerificationCodeHash:      &hash,
+		EmailVerificationCodeExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+
+	return s.issueSession(created)
+}
+
+// VerifyEmail checks a 6-digit code against the caller's own account
+// (authenticated — the handler passes the principal's own user ID, not
+// an arbitrary target). Rate-limited the same way as
+// CompletePasswordReset: otpMaxAttempts wrong guesses locks OTP flows for
+// otpLockoutDuration.
+func (s Service) VerifyEmail(ctx context.Context, userID, code string) error {
+	return s.consumeOTP(ctx, userID, code,
+		func(u User) (*string, *time.Time) {
+			return u.EmailVerificationCodeHash, u.EmailVerificationCodeExpiresAt
+		},
+		func(u *User) {
+			u.EmailVerified = true
+			u.EmailVerificationCodeHash = nil
+			u.EmailVerificationCodeExpiresAt = nil
+		},
+	)
+}
+
+// RequestPasswordReset always succeeds from the caller's point of view —
+// it never reveals whether identifier belongs to an account, and only
+// ever actually sends an email for an existing *requester* account (the
+// other 3 roles use admin-initiated reset, #67, by design: there's no
+// email infra story for them, and an external stranger resetting an
+// internal account's password isn't a flow this starter wants to enable
+// even if email were configured for them too).
+func (s Service) RequestPasswordReset(ctx context.Context, identifier string) error {
+	user, ok := s.users.FindByIdentifier(ctx, identifier)
+	if !ok || !user.HasRole(RoleRequester) || user.AuthProvider != AuthProviderLocal {
+		return nil
+	}
+
+	code, err := GenerateOTP()
+	if err != nil {
+		return err
+	}
+
+	hash := hashOTP(code)
+	expiresAt := s.now().Add(otpTTL)
+
+	// UpdateAtomic, not a blind Update with the User snapshot fetched
+	// above — a review caught that a full-row Update here could race
+	// against a concurrent CompletePasswordReset: if that call finishes
+	// first and sets a new PasswordHash, this method's stale snapshot
+	// (taken before that happened) would silently revert it the moment
+	// this write lands. Mutating only the 2 reset-code fields inside
+	// UpdateAtomic means whatever PasswordHash is current at write time
+	// is the one that survives, regardless of which request gets there
+	// first.
+	if _, err := s.users.UpdateAtomic(ctx, user.ID, func(current User) (User, error) {
+		current.PasswordResetCodeHash = &hash
+		current.PasswordResetCodeExpiresAt = &expiresAt
+		return current, nil
+	}); err != nil {
+		return err
+	}
+
+	// Dispatched asynchronously and the Send error deliberately swallowed
+	// — a review caught that a synchronous send here made an existing
+	// account's response measurably slower than a nonexistent one's,
+	// which is itself a timing side-channel leaking account existence
+	// even though the response body never does (this method's whole
+	// contract). Detached from ctx with its own bounded timeout, since
+	// ctx is cancelled the moment the HTTP handler returns — the send
+	// still has to be able to complete after that. Once there's
+	// server-side logging (issue #72), that's the right place to surface
+	// a real delivery failure — silently to an operator, never to the
+	// caller.
+	recipient := user.Identifier
+	go func() {
+		sendCtx, cancel := context.WithTimeout(context.Background(), emailSendTimeout)
+		defer cancel()
+
+		_ = s.email.Send(sendCtx, recipient, "Reset your password",
+			fmt.Sprintf("Your password reset code is %s. It expires in %d minutes.", code, int(otpTTL.Minutes())))
+	}()
+
+	return nil
+}
+
+// CompletePasswordReset verifies a 6-digit code against identifier and,
+// on success, sets newPassword. Unauthenticated by design (this is the
+// one account-recovery path for someone who, by definition, might not be
+// able to log in) — the code itself is the proof of identity.
+//
+// The code is consumed (atomically, via consumeOTP) before newPassword is
+// validated, deliberately in that order — not the other way around. A
+// review caught that validating the password first would let an attacker
+// send unlimited code guesses paired with a deliberately-malformed
+// password (always failing fast, before ever touching the attempt
+// counter), brute-forcing the code completely free of the lockout this
+// slice exists to enforce. The accepted tradeoff: a correct code paired
+// with a bad password still gets consumed, so fixing a password typo
+// needs a fresh forgot-password call rather than a retry with the same
+// code — a minor UX cost for closing a real rate-limit bypass.
+func (s Service) CompletePasswordReset(ctx context.Context, identifier, code, newPassword string) error {
+	user, ok := s.users.FindByIdentifier(ctx, identifier)
+	if !ok {
+		return ErrInvalidOrExpiredCode
+	}
+
+	if err := s.consumeOTP(ctx, user.ID, code,
+		func(u User) (*string, *time.Time) { return u.PasswordResetCodeHash, u.PasswordResetCodeExpiresAt },
+		func(u *User) {
+			u.PasswordResetCodeHash = nil
+			u.PasswordResetCodeExpiresAt = nil
+		},
+	); err != nil {
+		return err
+	}
+
+	trimmedNew := strings.TrimSpace(newPassword)
+	if len(trimmedNew) < 8 || len(newPassword) > 72 {
+		return ErrInvalidUserInput
+	}
+
+	passwordHash, err := s.passwords.Hash(newPassword)
+	if err != nil {
+		return err
+	}
+
+	// UpdateAtomic, not FindByID-then-Update — a review caught that even
+	// a *fresh* re-fetch here still leaves a window: a concurrent
+	// RequestPasswordReset could persist and email a brand new code after
+	// this re-fetch but before this write commits, and a blind full-row
+	// Update would silently erase that new code the moment it lands
+	// (reverting it to the nil consumeOTP just set, from a snapshot that
+	// predates the new code existing at all). Mutating only PasswordHash
+	// inside UpdateAtomic means that race is no longer possible — the
+	// worst case left is the narrow, user-visible one CodeRabbit called
+	// out: a reset code requested in that exact window needs a fresh
+	// forgot-password call, not a silently-reverted field.
+	_, err = s.users.UpdateAtomic(ctx, user.ID, func(current User) (User, error) {
+		current.PasswordHash = passwordHash
+		return current, nil
+	})
+	return err
+}
+
+// otpCheckResult carries consumeOTP's mutate-closure outcome back to the
+// caller — valid is whether the code matched; locked is set when the
+// account was already in its lockout window (checked, and left
+// unmodified, inside the same atomic operation rather than as a separate
+// read beforehand, which itself would have been racy).
+type otpCheckResult struct {
+	valid  bool
+	locked bool
+}
+
+// consumeOTP is the one piece of logic both OTP flows share: is the
+// account currently locked out, does the code match and hasn't expired —
+// and, atomically in the same store operation, either apply onSuccess (on
+// a correct code) or record the failed attempt and lock the account out
+// once otpMaxAttempts is reached (on a wrong one). Everything happens
+// inside UserStore.UpdateAtomic's single find-mutate-write, closing a
+// real race a review caught: the previous Find-then-separate-Update
+// design let two concurrent requests both read the same not-yet-cleared
+// code as valid before either committed (a single-use code consumed
+// twice), and let concurrent wrong guesses each compute "attempts+1" off
+// the same stale read (losing increments, defeating the lockout).
+func (s Service) consumeOTP(ctx context.Context, userID, code string, getCode func(User) (*string, *time.Time), onSuccess func(*User)) error {
+	now := s.now()
+	var result otpCheckResult
+
+	_, err := s.users.UpdateAtomic(ctx, userID, func(user User) (User, error) {
+		if user.OTPLockedUntil != nil && now.Before(*user.OTPLockedUntil) {
+			result.locked = true
+			return user, nil
+		}
+
+		storedHash, expiresAt := getCode(user)
+		valid := storedHash != nil && expiresAt != nil && now.Before(*expiresAt) && verifyOTP(code, *storedHash)
+
+		if valid {
+			result.valid = true
+			onSuccess(&user)
+			user.FailedOTPAttempts = 0
+			user.OTPLockedUntil = nil
+			return user, nil
+		}
+
+		user.FailedOTPAttempts++
+		if user.FailedOTPAttempts >= otpMaxAttempts {
+			lockedUntil := now.Add(otpLockoutDuration)
+			user.OTPLockedUntil = &lockedUntil
+		}
+
+		return user, nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if result.locked {
+		return ErrTooManyAttempts
+	}
+	if !result.valid {
+		return ErrInvalidOrExpiredCode
+	}
+
+	return nil
+}
+
 func isKnownRole(role Role) bool {
 	switch role {
 	case RoleAdmin, RoleAssignee, RoleSupervisor, RoleRequester:
@@ -340,6 +650,7 @@ func principalFromUser(user User) Principal {
 		DisplayName:            user.DisplayName,
 		Roles:                  append([]Role(nil), user.Roles...),
 		RequiresPasswordChange: user.RequiresPasswordChange,
+		EmailVerified:          user.EmailVerified,
 	}
 }
 

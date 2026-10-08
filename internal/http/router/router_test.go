@@ -1646,6 +1646,79 @@ func TestGoogleOAuthLoginRedirectsWhenConfigured(t *testing.T) {
 	}
 }
 
+// TestEmailAuthRoutesAbsentWhenNotConfigured proves the "absent config,
+// route doesn't exist" pattern for OPS-068b — newTestRouter's config
+// never sets an email provider, matching how every zero-setup `go run`
+// behaves before anyone configures Resend or SMTP.
+func TestEmailAuthRoutesAbsentWhenNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/auth/signup"},
+		{http.MethodPost, "/auth/verify-email"},
+		{http.MethodPost, "/auth/forgot-password"},
+		{http.MethodPost, "/auth/reset-password"},
+	} {
+		req := httptest.NewRequest(route.method, route.path, bytes.NewBufferString(`{}`))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected status %d for %s when no email provider is configured, got %d", http.StatusNotFound, route.path, rec.Code)
+		}
+	}
+}
+
+// TestSignupRouteMountedWhenEmailConfigured proves the route exists and
+// reaches validation once an email provider is configured — using a fake
+// Resend API key and a deliberately-invalid signup body (password too
+// short), so this never actually calls Service.SignUp far enough to
+// trigger a real network call to Resend. The real send-and-receive-a-
+// real-OTP path needs a real email provider, verified by hand (same
+// honest limitation as OPS-068a's Google exchange).
+func TestSignupRouteMountedWhenEmailConfigured(t *testing.T) {
+	t.Parallel()
+
+	handler, _, err := New(context.Background(), config.Config{
+		Port:                           "8080",
+		AppEnv:                         "test",
+		AuthTokenSecret:                "test-secret",
+		AuthTokenTTL:                   time.Hour,
+		BootstrapAdminIdentifier:       "admin@ops.local",
+		BootstrapAdminPassword:         "ChangeMe123!",
+		BootstrapAdminDisplayName:      "Platform Admin",
+		BootstrapAssigneeIdentifier:    "assignee@ops.local",
+		BootstrapAssigneePassword:      "ChangeMe123!",
+		BootstrapAssigneeDisplayName:   "Assigned Worker",
+		BootstrapSupervisorIdentifier:  "supervisor@ops.local",
+		BootstrapSupervisorPassword:    "ChangeMe123!",
+		BootstrapSupervisorDisplayName: "Team Supervisor",
+		BootstrapRequesterIdentifier:   "requester@ops.local",
+		BootstrapRequesterPassword:     "ChangeMe123!",
+		BootstrapRequesterDisplayName:  "Requesting Customer",
+		AttachmentUploadDir:            t.TempDir(),
+		ResendAPIKey:                   "test-resend-key",
+		ResendFrom:                     "onboarding@resend.dev",
+	})
+	if err != nil {
+		t.Fatalf("expected router to be created, got error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/signup",
+		bytes.NewBufferString(`{"identifier":"new-requester@gmail.com","password":"short","displayName":"New Requester"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d (validation failure, before any email would be sent), got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
 func loginAndReturnToken(t *testing.T, handler http.Handler, identifier, password string) string {
 	t.Helper()
 
