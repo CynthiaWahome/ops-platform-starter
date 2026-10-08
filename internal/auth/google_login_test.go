@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -117,6 +118,99 @@ func TestLoginWithGoogleRejectsInactiveAccount(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInactiveUser) {
 		t.Fatalf("expected ErrInactiveUser, got %v", err)
+	}
+}
+
+// TestMemoryUserStoreCreateRejectsDuplicateGoogleSubjectID is a
+// defense-in-depth test, not a normal-path one: Service.LoginWithGoogle
+// already prevents a duplicate by calling FindByGoogleSubjectID before
+// Create, so this calls the store directly to prove it has its own
+// uniqueness guarantee too — matching PostgresUserStore's real UNIQUE
+// constraint on the column — for the case where two concurrent
+// first-logins for the same brand-new identity both pass that check
+// before either Create commits.
+func TestMemoryUserStoreCreateRejectsDuplicateGoogleSubjectID(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryUserStore()
+	subjectID := "google-subject-race"
+
+	_, err := store.Create(context.Background(), User{
+		Identifier:      "first@gmail.com",
+		DisplayName:     "First",
+		Roles:           []Role{RoleRequester},
+		IsActive:        true,
+		AuthProvider:    AuthProviderGoogle,
+		GoogleSubjectID: &subjectID,
+	})
+	if err != nil {
+		t.Fatalf("expected first create to succeed, got error: %v", err)
+	}
+
+	_, err = store.Create(context.Background(), User{
+		Identifier:      "second@gmail.com",
+		DisplayName:     "Second",
+		Roles:           []Role{RoleRequester},
+		IsActive:        true,
+		AuthProvider:    AuthProviderGoogle,
+		GoogleSubjectID: &subjectID,
+	})
+	if !errors.Is(err, ErrIdentifierTaken) {
+		t.Fatalf("expected a second account with the same GoogleSubjectID to be rejected, got %v", err)
+	}
+}
+
+func TestParseGoogleUserInfoRejectsUnverifiedEmail(t *testing.T) {
+	t.Parallel()
+
+	body := strings.NewReader(`{"sub":"12345","email":"someone@gmail.com","email_verified":false,"name":"Someone"}`)
+
+	_, err := parseGoogleUserInfo(body)
+	if err == nil {
+		t.Fatal("expected an error for an unverified Google email, got nil")
+	}
+	if !strings.Contains(err.Error(), "not verified") {
+		t.Fatalf("expected the error to mention the email isn't verified, got: %v", err)
+	}
+}
+
+func TestParseGoogleUserInfoRejectsMissingEmailVerifiedField(t *testing.T) {
+	t.Parallel()
+
+	// Google's own field, omitted entirely, unmarshals to Go's bool zero
+	// value (false) — same rejection as an explicit false, not silently
+	// treated as verified just because the field wasn't sent.
+	body := strings.NewReader(`{"sub":"12345","email":"someone@gmail.com","name":"Someone"}`)
+
+	_, err := parseGoogleUserInfo(body)
+	if err == nil {
+		t.Fatal("expected an error when email_verified is absent, got nil")
+	}
+}
+
+func TestParseGoogleUserInfoAcceptsVerifiedEmail(t *testing.T) {
+	t.Parallel()
+
+	body := strings.NewReader(`{"sub":"12345","email":"someone@gmail.com","email_verified":true,"name":"Someone"}`)
+
+	identity, err := parseGoogleUserInfo(body)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	if identity.Subject != "12345" || identity.Email != "someone@gmail.com" {
+		t.Fatalf("expected the identity fields to be populated correctly, got %+v", identity)
+	}
+}
+
+func TestParseGoogleUserInfoRejectsMissingSubjectOrEmail(t *testing.T) {
+	t.Parallel()
+
+	body := strings.NewReader(`{"email_verified":true,"name":"Someone"}`)
+
+	_, err := parseGoogleUserInfo(body)
+	if err == nil {
+		t.Fatal("expected an error for a missing sub/email, got nil")
 	}
 }
 

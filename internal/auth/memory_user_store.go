@@ -74,6 +74,16 @@ func (s *MemoryUserStore) Create(_ context.Context, user User) (User, error) {
 		if existing.Identifier == normalized {
 			return User{}, ErrIdentifierTaken
 		}
+		// A review caught that this store never checked GoogleSubjectID
+		// uniqueness — PostgresUserStore has a real UNIQUE constraint on
+		// the column, but this one had no equivalent, so two concurrent
+		// first-logins for the same brand-new Google identity (both
+		// passing FindByGoogleSubjectID before either Create commits)
+		// could create two accounts sharing one Google subject, breaking
+		// FindByGoogleSubjectID's single-result assumption.
+		if existing.GoogleSubjectID != nil && user.GoogleSubjectID != nil && *existing.GoogleSubjectID == *user.GoogleSubjectID {
+			return User{}, ErrIdentifierTaken
+		}
 	}
 
 	s.seq++
