@@ -8,6 +8,7 @@ import (
 	"github.com/CynthiaWahome/ops-platform-starter/internal/auth"
 	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
 	"github.com/CynthiaWahome/ops-platform-starter/internal/db"
+	"github.com/CynthiaWahome/ops-platform-starter/internal/http/docs"
 	"github.com/CynthiaWahome/ops-platform-starter/internal/http/handlers"
 	httpmiddleware "github.com/CynthiaWahome/ops-platform-starter/internal/http/middleware"
 	"github.com/CynthiaWahome/ops-platform-starter/internal/notifications"
@@ -157,6 +158,13 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, *pgxpool.Pool, e
 	notificationHandler := handlers.NewNotificationHandler(notificationService)
 
 	mux.Handle("GET /health", healthHandler)
+
+	// API docs (OPS-069) — public, no auth, reads nothing from any
+	// service. Swagger UI's assets and the spec itself are both
+	// go:embedded (internal/http/docs), no external CDN dependency.
+	docsHandler := docs.NewHandler()
+	mux.HandleFunc("GET /docs/openapi.yaml", docsHandler.ServeSpec)
+	mux.HandleFunc("GET /docs/", docsHandler.ServeStatic)
 
 	// auth/login never requires a token to begin with; auth/me and
 	// auth/change-password are the two routes OPS-067 deliberately leaves
