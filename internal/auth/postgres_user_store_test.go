@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,5 +116,106 @@ func TestPostgresUserStoreRoundTripsEmailVerificationAndResetFields(t *testing.T
 	}
 	if refetched.FailedOTPAttempts != 2 {
 		t.Fatalf("expected FailedOTPAttempts=2 to have actually persisted in Postgres, got %d", refetched.FailedOTPAttempts)
+	}
+}
+
+// TestPostgresUserStoreUpdateAtomicAppliesMutation proves the basic
+// contract — not found, mutate's return value persisted, re-fetchable —
+// before the concurrency test below proves the actual point of adding
+// UpdateAtomic.
+func TestPostgresUserStoreUpdateAtomicAppliesMutation(t *testing.T) {
+	pool := testUserPool(t)
+	store := NewPostgresUserStore(pool)
+	ctx := context.Background()
+
+	created, err := store.Create(ctx, User{
+		Identifier:   "atomic-basic@gmail.com",
+		DisplayName:  "Atomic Basic",
+		PasswordHash: "irrelevant-hash",
+		Roles:        []Role{RoleRequester},
+		IsActive:     true,
+		AuthProvider: AuthProviderLocal,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	updated, err := store.UpdateAtomic(ctx, created.ID, func(u User) (User, error) {
+		u.FailedOTPAttempts = 7
+		return u, nil
+	})
+	if err != nil {
+		t.Fatalf("expected UpdateAtomic to succeed, got error: %v", err)
+	}
+	if updated.FailedOTPAttempts != 7 {
+		t.Fatalf("expected the mutated value to come back from UpdateAtomic, got %d", updated.FailedOTPAttempts)
+	}
+
+	refetched, ok := store.FindByID(ctx, created.ID)
+	if !ok || refetched.FailedOTPAttempts != 7 {
+		t.Fatalf("expected FailedOTPAttempts=7 to have actually persisted, got %+v", refetched)
+	}
+
+	_, err = store.UpdateAtomic(ctx, "user-does-not-exist", func(u User) (User, error) { return u, nil })
+	if !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected ErrUserNotFound for a missing id, got %v", err)
+	}
+}
+
+// TestPostgresUserStoreUpdateAtomicSerializesConcurrentMutations is the
+// real proof for Postgres specifically: SELECT ... FOR UPDATE inside a
+// transaction should make one concurrent caller's find-mutate-write wait
+// for another's to fully commit, rather than both reading the same
+// pre-mutation row the way two separate, un-transactioned
+// SELECT-then-UPDATE statements could. Fires concurrent increments at the
+// same counter and asserts none of them were lost — a plain SELECT
+// followed by a separate UPDATE (no row lock, no shared transaction)
+// would lose some of these under real concurrent load.
+func TestPostgresUserStoreUpdateAtomicSerializesConcurrentMutations(t *testing.T) {
+	pool := testUserPool(t)
+	store := NewPostgresUserStore(pool)
+	ctx := context.Background()
+
+	created, err := store.Create(ctx, User{
+		Identifier:   "atomic-race@gmail.com",
+		DisplayName:  "Atomic Race",
+		PasswordHash: "irrelevant-hash",
+		Roles:        []Role{RoleRequester},
+		IsActive:     true,
+		AuthProvider: AuthProviderLocal,
+	})
+	if err != nil {
+		t.Fatalf("expected create to succeed, got error: %v", err)
+	}
+
+	const concurrentIncrements = 20
+
+	var wg sync.WaitGroup
+	errs := make([]error, concurrentIncrements)
+
+	for i := range concurrentIncrements {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = store.UpdateAtomic(ctx, created.ID, func(u User) (User, error) {
+				u.FailedOTPAttempts++
+				return u, nil
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("expected increment %d to succeed, got error: %v", i, err)
+		}
+	}
+
+	refetched, ok := store.FindByID(ctx, created.ID)
+	if !ok {
+		t.Fatal("expected to find the user after the concurrent increments")
+	}
+	if refetched.FailedOTPAttempts != concurrentIncrements {
+		t.Fatalf("expected all %d concurrent increments to land with none lost, got %d", concurrentIncrements, refetched.FailedOTPAttempts)
 	}
 }

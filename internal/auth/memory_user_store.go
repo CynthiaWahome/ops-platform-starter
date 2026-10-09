@@ -74,6 +74,16 @@ func (s *MemoryUserStore) Create(_ context.Context, user User) (User, error) {
 		if existing.Identifier == normalized {
 			return User{}, ErrIdentifierTaken
 		}
+		// A review caught that this store never checked GoogleSubjectID
+		// uniqueness — PostgresUserStore has a real UNIQUE constraint on
+		// the column, but this one had no equivalent, so two concurrent
+		// first-logins for the same brand-new Google identity (both
+		// passing FindByGoogleSubjectID before either Create commits)
+		// could create two accounts sharing one Google subject, breaking
+		// FindByGoogleSubjectID's single-result assumption.
+		if existing.GoogleSubjectID != nil && user.GoogleSubjectID != nil && *existing.GoogleSubjectID == *user.GoogleSubjectID {
+			return User{}, ErrIdentifierTaken
+		}
 	}
 
 	s.seq++
@@ -103,6 +113,30 @@ func (s *MemoryUserStore) Update(_ context.Context, user User) (User, error) {
 		if existing.ID == user.ID {
 			s.users[i] = user
 			return user, nil
+		}
+	}
+
+	return User{}, ErrUserNotFound
+}
+
+// UpdateAtomic holds the store-wide lock for the entire find-mutate-write
+// sequence, unlike calling FindByID and Update separately — see the
+// UserStore interface doc comment for why that matters (OPS-068b's OTP
+// consumption race).
+func (s *MemoryUserStore) UpdateAtomic(_ context.Context, id string, mutate func(User) (User, error)) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.users {
+		if existing.ID == id {
+			updated, err := mutate(existing)
+			if err != nil {
+				return User{}, err
+			}
+
+			s.users[i] = updated
+
+			return updated, nil
 		}
 	}
 
