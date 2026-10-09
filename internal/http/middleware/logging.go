@@ -22,6 +22,18 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+// Unwrap lets http.ResponseController reach the real ResponseWriter
+// through this wrapper — a review caught that without it, a future
+// handler using the controller for Flush (streaming) or Hijack
+// (websockets) would silently fail to reach those capabilities, since
+// RequestLogger sits in front of every route in this app. No current
+// handler needs either, but this wrapper sees every request, so it's
+// worth closing defensively rather than waiting for a handler that needs
+// it to discover the gap.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // ConfigureDefaultLogger sets slog's process-wide default logger based on
 // appEnv — the lever cfg.AppEnv (APP_ENV) already provides, so no new env
 // var is needed to control verbosity. "development" (the zero-setup
