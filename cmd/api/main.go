@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/CynthiaWahome/ops-platform-starter/internal/config"
+	httpmiddleware "github.com/CynthiaWahome/ops-platform-starter/internal/http/middleware"
 	"github.com/CynthiaWahome/ops-platform-starter/internal/server"
 	"github.com/joho/godotenv"
 )
@@ -34,6 +35,12 @@ func main() {
 	}
 
 	cfg := config.Load()
+
+	// Set before anything else logs (issue #72) — development gets
+	// verbose text logs at Debug level, anything else gets quieter
+	// structured JSON at Info, controlled by the same APP_ENV already
+	// loaded above rather than a separate env var.
+	httpmiddleware.ConfigureDefaultLogger(cfg.AppEnv)
 
 	// ctx is cancelled the moment the process receives SIGINT/SIGTERM
 	// (Ctrl+C, or a container orchestrator asking it to stop) — this is
