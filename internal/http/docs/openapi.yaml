@@ -1,0 +1,1774 @@
+openapi: 3.0.3
+info:
+  title: Work Order Management System API
+  description: >-
+    The backend for a work order management system — create, assign, track,
+    and verify work, with real role-based access control and a real
+    status-transition engine underneath. REST/JSON only, no frontend shipped
+    in this repo.
+
+
+    Every error response documented here was pulled directly from the
+    handler source that produces it (literal message strings, not
+    paraphrased), including the two layers that can reject a request before
+    a handler ever runs: `RequireAuth` (401) and
+    `RequireRoles`/`RequirePasswordChangeCleared`/
+    `RequireVerifiedEmailForRequester` (403). Two test-only probe routes
+    (`GET /access/admin`, `GET /access/assignee`) exist in the server but are
+    deliberately left out of this spec — they are role-check scaffolding,
+    not real product endpoints.
+  version: "1.0.0"
+  license:
+    name: MIT
+servers:
+  - url: /
+    description: Same origin as the running API — no fixed public domain.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Health
+  - name: Auth
+    description: Login, Google OAuth, self-service signup, password management.
+  - name: Users
+    description: Admin/supervisor-provisioned internal accounts (OPS-067).
+  - name: Work Items
+  - name: Assignments
+  - name: Teams
+    description: The boundary a supervisor's authority is scoped to (OPS-045).
+  - name: Attachments
+  - name: Notifications
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Server is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Password login (admin, supervisor, assignee, requester)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequestPayload"
+        "401":
+          description: Wrong identifier or password.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: invalid credentials
+        "403":
+          description: Account exists but is deactivated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: user is inactive
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current principal
+      responses:
+        "200":
+          description: The caller's own principal, re-derived from the live user record on every request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Principal"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Self-service password change
+      description: >-
+        The one write every account is always allowed to make, even one
+        currently gated by `requiresPasswordChange` (e.g. straight after
+        `POST /users` or `POST /users/{id}/reset-password`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          description: Password changed, requiresPasswordChange cleared.
+        "400":
+          description: Payload malformed, or the new password failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidPayload:
+                  value: { message: invalid request payload }
+                tooShort:
+                  value: { message: new password must be at least 8 characters }
+        "401":
+          description: Not authenticated, or oldPassword is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unauthenticated:
+                  value: { message: authentication required }
+                wrongOldPassword:
+                  value: { message: old password is incorrect }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/google/login:
+    get:
+      tags: [Auth]
+      summary: Begin Google OAuth (requester signup/login)
+      description: >-
+        Only mounted when `GOOGLE_CLIENT_ID` is configured (404 otherwise).
+        Sets a short-lived httponly state cookie and redirects the browser to
+        Google's consent screen. Meant for a real browser, not a REST client.
+      security: []
+      responses:
+        "302":
+          description: Redirect to Google's consent screen.
+        "404":
+          description: Google OAuth is not configured on this server.
+        "500":
+          description: Failed to generate the OAuth state value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: unable to start google login
+
+  /auth/google/callback:
+    get:
+      tags: [Auth]
+      summary: Google OAuth callback
+      description: >-
+        Google redirects the browser here after consent. First callback for
+        a given Google identity auto-creates a requester account
+        (emailVerified true — Google already verified it); every later
+        callback for the same identity finds that same account.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Login succeeded (new or existing requester account).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: CSRF state mismatch/missing, or no authorization code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                badState:
+                  value: { message: invalid or missing oauth state }
+                missingCode:
+                  value: { message: missing authorization code }
+        "403":
+          description: Account exists but is deactivated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: user is inactive
+        "409":
+          description: This email already belongs to a local (password) account. Linking identities is out of scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: "an account with this email already exists; log in with your password instead"
+        "502":
+          description: Google rejected the code exchange.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: unable to verify google identity
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Self-service requester signup (email/password)
+      description: >-
+        Only mounted when an email provider (Resend or SMTP) is configured
+        (404 otherwise). Always creates a requester — no role field exists
+        in the request. A verification OTP is emailed immediately;
+        emailVerified is false until confirmed via POST /auth/verify-email.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignUpRequest"
+      responses:
+        "201":
+          description: Account created, logged in, verification email sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Missing/invalid identifier, password (under 8 or over 72 bytes), or display name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: invalid identifier, password, or display name
+        "404":
+          description: Google OAuth and email auth are both unconfigured — this route does not exist.
+        "409":
+          description: Identifier already in use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: identifier already in use
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Confirm the emailed verification OTP
+      description: >-
+        Authenticated — checks the code against the caller's own account.
+        Until verified, the caller (if a requester) is blocked from
+        POST /workitems only; every other action is unaffected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyEmailRequest"
+      responses:
+        "204":
+          description: Email verified.
+        "400":
+          description: Wrong or expired code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: invalid or expired code
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Caller's user record no longer exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: user not found
+        "429":
+          description: 5 wrong attempts reached — locked for 15 minutes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: too many attempts, try again later
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password-reset OTP (requester only)
+      description: >-
+        Only mounted when an email provider is configured. Always returns
+        the same generic 200 regardless of whether identifier belongs to an
+        account — deliberately never reveals existence. Only ever actually
+        emails a code for an existing requester using local (password) auth;
+        the other 3 roles use admin-initiated reset instead
+        (POST /users/{id}/reset-password), by design.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgotPasswordRequest"
+      responses:
+        "200":
+          description: Always this generic response, account or not.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+              example:
+                message: if an account exists, a reset code has been sent
+        "400":
+          $ref: "#/components/responses/BadRequestPayload"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Complete a password reset with the emailed OTP
+      description: >-
+        Unauthenticated by design — the code is the proof of identity for
+        someone who, by definition, might not be able to log in.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordWithCodeRequest"
+      responses:
+        "204":
+          description: Password reset.
+        "400":
+          description: Wrong/expired code, or new password failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                badCode:
+                  value: { message: invalid or expired code }
+                tooShort:
+                  value: { message: new password must be at least 8 characters }
+        "404":
+          description: Identifier does not resolve to any account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: invalid or expired code
+        "429":
+          description: 5 wrong attempts reached — locked for 15 minutes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: too many attempts, try again later
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /users:
+    post:
+      tags: [Users]
+      summary: Admin provisions a new internal account
+      description: >-
+        Admin-only. teamId is required for role assignee/supervisor and, if
+        present, immediately provisions the team membership/supervision too
+        — validated as a real team *before* the account is created, so a
+        bad teamId never leaves an orphaned account behind.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: Account created. tempPassword is shown exactly once, never emailed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateUserResponse"
+        "400":
+          description: Payload invalid, missing teamId for supervisor/assignee, or teamId does not refer to a real team.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missingTeam:
+                  value: { message: "teamId is required for supervisor and assignee roles" }
+                badTeam:
+                  value: { message: "teamId does not refer to a real team" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Identifier already in use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: identifier already in use
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Users]
+      summary: List accounts (admin unrestricted, supervisor scoped)
+      description: >-
+        Admin sees every account. Supervisor sees only the assignees on
+        their own supervised team(s), plus themselves — fellow
+        co-supervisors of the same team are deliberately left out.
+      responses:
+        "200":
+          description: Accounts visible to the caller.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /users/{id}:
+    patch:
+      tags: [Users]
+      summary: Deactivate/reactivate or change a user's role
+      description: >-
+        Admin may change isActive or role. A supervisor may only target a
+        user in their own supervised-assignee list, and may NEVER send a
+        role field — rejected before the target-ownership check even runs
+        (closes a real privilege-escalation path). Team reassignment is not
+        done here; use POST /teams/{id}/assignees or /supervisors.
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: Updated account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequestPayload"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Insufficient permissions, or a non-admin tried to set a role at all.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                insufficient:
+                  value: { message: insufficient permissions }
+                roleChangeBlocked:
+                  value: { message: "only admin may change a user's role" }
+        "404":
+          description: Target user does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: user not found
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /users/{id}/reset-password:
+    post:
+      tags: [Users]
+      summary: Admin-initiated password reset (internal users)
+      description: >-
+        This IS the password-reset story for internal (non-requester)
+        accounts — admin-initiated, not self-service, since there's no
+        email infra for them. Re-triggers the temp-password flow. A
+        supervisor may do this for their own supervised assignees only, and
+        can never target an account that currently holds the admin role,
+        regardless of how it got that role (defense in depth).
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: New temp password issued, requiresPasswordChange set again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResetPasswordResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Target user does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: user not found
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems:
+    post:
+      tags: [Work Items]
+      summary: Create a work item (admin, supervisor, or requester)
+      description: >-
+        A requester who hasn't verified their email gets 403 here even with
+        the right role — the one action RequireVerifiedEmailForRequester
+        gates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkItemRequest"
+      responses:
+        "201":
+          description: Work item created, status "created".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItem"
+        "400":
+          description: Invalid title/description/priority.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidInput:
+                  value: { message: invalid work item input }
+                invalidPriority:
+                  value: { message: invalid work item priority }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Wrong role, or an unverified requester.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                insufficient:
+                  value: { message: insufficient permissions }
+                unverified:
+                  value: { message: verify your email before creating a work item }
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Work Items]
+      summary: List work items (role-scoped)
+      description: Admin sees all; supervisor sees their team's; assignee sees their own assigned; requester sees their own created.
+      responses:
+        "200":
+          description: Work items visible to the caller.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkItem" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}:
+    get:
+      tags: [Work Items]
+      summary: Get one work item
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      responses:
+        "200":
+          description: The work item, if visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [Work Items]
+      summary: Edit title/description/priority/location/dueAt (admin, supervisor)
+      description: >-
+        Does not change status — use PATCH /workitems/{id}/status for
+        that. A supervisor may only edit a work item that is still
+        unassigned.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWorkItemRequest"
+      responses:
+        "200":
+          description: Updated work item.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItem"
+        "400":
+          description: Invalid input, invalid priority, or the item is already assigned (supervisor caller only).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                alreadyAssigned:
+                  value: { message: "work item is already assigned and can no longer be edited by a supervisor" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/status:
+    patch:
+      tags: [Work Items]
+      summary: Move a work item's status (generic transition endpoint)
+      description: >-
+        Moving to submitted_for_review requires at least one attachment
+        already uploaded. Admin/supervisor may trigger any legal
+        transition; an assignee is restricted to the smaller
+        assignee-allowed subset (start work, submit for review, rework a
+        flagged item).
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeStatusRequest"
+      responses:
+        "200":
+          description: Status changed, a StatusHistory row recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItem"
+        "400":
+          description: Invalid input/status, an illegal transition, or missing the required attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                illegalTransition:
+                  value: { message: status transition not allowed }
+                noAttachment:
+                  value: { message: "at least one attachment is required before submitting for review" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/verify:
+    post:
+      tags: [Work Items]
+      summary: Verify submitted work (admin, supervisor)
+      description: >-
+        Purpose-built front door onto submitted_for_review -> verified. A
+        supervisor may only verify work items on a team they actively
+        supervise.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+      responses:
+        "200":
+          description: Work item verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItem"
+        "400":
+          description: Invalid input, or not currently submitted_for_review.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: status transition not allowed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/flag:
+    post:
+      tags: [Work Items]
+      summary: Flag submitted work for rework (admin, supervisor)
+      description: >-
+        submitted_for_review -> flagged. Unlike verify, note is required —
+        rejected before ChangeStatus is even called.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FlagRequest"
+      responses:
+        "200":
+          description: Work item flagged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkItem"
+        "400":
+          description: Empty/whitespace-only note, or not currently submitted_for_review.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                noteRequired:
+                  value: { message: feedback note is required when flagging a work item }
+                illegalTransition:
+                  value: { message: status transition not allowed }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/history:
+    get:
+      tags: [Work Items]
+      summary: Status change history (append-only)
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      responses:
+        "200":
+          description: Every status transition, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/StatusHistory" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/assignment-history:
+    get:
+      tags: [Assignments]
+      summary: Assignment event history (append-only)
+      description: Survives reassignment — a declined assignee still shows up here even after the item is reassigned.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      responses:
+        "200":
+          description: Every assignment event, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AssignmentHistory" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/assignment:
+    post:
+      tags: [Assignments]
+      summary: Assign a work item (admin, supervisor)
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignRequest"
+      responses:
+        "201":
+          description: Assignment created, work item status moves to "assigned".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assignment"
+        "400":
+          description: Invalid input, or the item cannot legally move to "assigned" right now.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: status transition not allowed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Assignments]
+      summary: Current assignment
+      description: 404s with a distinct message if the work item itself doesn't exist vs. if it exists but has never been assigned.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      responses:
+        "200":
+          description: The current assignment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assignment"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Work item not found, or no assignment exists yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                workItemMissing:
+                  value: { message: work item not found }
+                noAssignment:
+                  value: { message: assignment not found }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/assignment/accept:
+    post:
+      tags: [Assignments]
+      summary: Assignee accepts their assignment
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RespondToAssignmentRequest"
+      responses:
+        "200":
+          description: Accepted, work item status moves to "accepted".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assignment"
+        "400":
+          $ref: "#/components/responses/BadRequestPayload"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Wrong role, or this assignment belongs to a different user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                wrongRole:
+                  value: { message: insufficient permissions }
+                notOwned:
+                  value: { message: assignment does not belong to this user }
+        "404":
+          description: Work item or assignment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                workItemMissing:
+                  value: { message: work item not found }
+                noAssignment:
+                  value: { message: assignment not found }
+        "409":
+          description: Already responded to (accepted or declined).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: assignment has already been responded to
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/assignment/decline:
+    post:
+      tags: [Assignments]
+      summary: Assignee declines their assignment
+      description: >-
+        Work item bounces to "created" (not cancelled) and
+        assignedToUserId is cleared, so an admin can reassign it.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RespondToAssignmentRequest"
+      responses:
+        "200":
+          description: Declined.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assignment"
+        "400":
+          $ref: "#/components/responses/BadRequestPayload"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Wrong role, or this assignment belongs to a different user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                wrongRole:
+                  value: { message: insufficient permissions }
+                notOwned:
+                  value: { message: assignment does not belong to this user }
+        "404":
+          description: Work item or assignment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                workItemMissing:
+                  value: { message: work item not found }
+                noAssignment:
+                  value: { message: assignment not found }
+        "409":
+          description: Already responded to.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: assignment has already been responded to
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /workitems/{id}/attachments:
+    post:
+      tags: [Attachments]
+      summary: Upload evidence (admin, assignee, supervisor)
+      description: multipart/form-data with a "kind" text field and a "file" field.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                kind:
+                  $ref: "#/components/schemas/AttachmentKind"
+                file:
+                  type: string
+                  format: binary
+              required: [kind, file]
+      responses:
+        "201":
+          description: Attachment recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+        "400":
+          description: Invalid multipart body, missing file, or invalid kind.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                badMultipart:
+                  value: { message: invalid multipart upload }
+                missingFile:
+                  value: { message: missing file field }
+                invalidKind:
+                  value: { message: invalid attachment kind }
+                emptyFile:
+                  value: { message: uploaded file is empty }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Attachments]
+      summary: List attachments on a work item
+      parameters:
+        - $ref: "#/components/parameters/WorkItemId"
+      responses:
+        "200":
+          description: Attachments, scoped the same as the work item itself.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Attachment" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/WorkItemNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /teams:
+    post:
+      tags: [Teams]
+      summary: Create a team (admin-only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTeamRequest"
+      responses:
+        "201":
+          description: Team created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Team"
+        "400":
+          description: Missing/invalid name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: invalid team input
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Teams]
+      summary: List every team (admin-only)
+      responses:
+        "200":
+          description: Every team.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Team" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /teams/{id}/assignees:
+    post:
+      tags: [Teams]
+      summary: Move an assignee onto this team (admin-only)
+      description: >-
+        An assignee has exactly one active team at a time — calling this
+        again with a different team moves them, closing the old
+        membership rather than erasing it.
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamMemberRequest"
+      responses:
+        "201":
+          description: Membership created (or returned unchanged if already on this team).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Membership"
+        "400":
+          description: Missing teamId/userId.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: invalid team input
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Team does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: team not found
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /teams/{id}/supervisors:
+    post:
+      tags: [Teams]
+      summary: Grant a user supervisor authority over this team (admin-only)
+      description: A team can have more than one active supervisor at once (co-supervision).
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamMemberRequest"
+      responses:
+        "201":
+          description: Supervision granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Supervision"
+        "400":
+          description: Missing teamId/userId.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: invalid team input
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Team does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: team not found
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /teams/{id}/supervisors/{userId}:
+    delete:
+      tags: [Teams]
+      summary: Revoke a supervisor's authority over this team (admin-only)
+      description: >-
+        If this leaves zero active supervisors, no special handling is
+        needed — admin retains unrestricted global authority over every
+        team at all times.
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Supervision revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Team does not exist, or this user is not currently an active supervisor of it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                teamMissing:
+                  value: { message: team not found }
+                notSupervisor:
+                  value: { message: user is not an active supervisor of this team }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List the caller's own notifications
+      parameters:
+        - name: unread
+          in: query
+          description: Set to "true" to return only unread notifications.
+          schema: { type: string, enum: ["true"] }
+      responses:
+        "200":
+          description: Caller's notifications, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Notification" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark one of the caller's own notifications read
+      description: >-
+        A notification belonging to another user 404s — the same
+        "acts as if it doesn't exist" shape used everywhere else for
+        cross-user access.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Marked read (idempotent — marking an already-read notification again succeeds, readAt unchanged).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "400":
+          $ref: "#/components/responses/BadRequestPayload"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Not found, or belongs to a different user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: notification not found
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Obtained from POST /auth/login, POST /auth/signup, or the Google
+        OAuth callback. Re-derived fresh from the live user record on every
+        request (role changes, deactivation, and verification status take
+        effect immediately, no new token needed).
+
+  parameters:
+    WorkItemId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      example: workitem-0001
+    TeamId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      example: team-0001
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      example: user-0001
+
+  responses:
+    Unauthorized:
+      description: No/invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            missing:
+              value: { message: authentication required }
+            invalidToken:
+              value: { message: invalid access token }
+    Forbidden:
+      description: >-
+        Authenticated but not permitted — wrong role, or (for POST
+        /workitems specifically) an unverified requester.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: insufficient permissions
+    BadRequestPayload:
+      description: Request body failed to decode or was missing required fields.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: invalid request payload
+    WorkItemNotFound:
+      description: Work item does not exist, or is not visible to the caller.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: work item not found
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        message: { type: string }
+      required: [message]
+
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+        service: { type: string, example: ops-platform-starter-backend }
+        appEnv: { type: string, example: development }
+
+    Role:
+      type: string
+      enum: [admin, supervisor, assignee, requester]
+
+    AuthProvider:
+      type: string
+      enum: [local, google]
+
+    Principal:
+      type: object
+      properties:
+        userId: { type: string }
+        identifier: { type: string }
+        displayName: { type: string }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/Role" }
+        requiresPasswordChange: { type: boolean }
+        emailVerified: { type: boolean }
+
+    Session:
+      type: object
+      properties:
+        accessToken: { type: string }
+        expiresAt: { type: string, format: date-time }
+        user: { $ref: "#/components/schemas/Principal" }
+
+    User:
+      type: object
+      description: passwordHash and every OTP/reset-token field are never serialized (json:"-") regardless of caller.
+      properties:
+        id: { type: string }
+        identifier: { type: string }
+        displayName: { type: string }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/Role" }
+        isActive: { type: boolean }
+        requiresPasswordChange: { type: boolean }
+        createdByUserId:
+          type: string
+          description: Empty for the 4 bootstrap accounts; the acting admin's ID for every account created via POST /users.
+        authProvider: { $ref: "#/components/schemas/AuthProvider" }
+        emailVerified: { type: boolean }
+
+    LoginRequest:
+      type: object
+      properties:
+        identifier: { type: string }
+        password: { type: string }
+      required: [identifier, password]
+
+    ChangePasswordRequest:
+      type: object
+      properties:
+        oldPassword: { type: string }
+        newPassword: { type: string }
+      required: [oldPassword, newPassword]
+
+    SignUpRequest:
+      type: object
+      properties:
+        identifier: { type: string }
+        password: { type: string, minLength: 8, maxLength: 72 }
+        displayName: { type: string }
+      required: [identifier, password, displayName]
+
+    VerifyEmailRequest:
+      type: object
+      properties:
+        code: { type: string, example: "042918" }
+      required: [code]
+
+    ForgotPasswordRequest:
+      type: object
+      properties:
+        identifier: { type: string }
+      required: [identifier]
+
+    ResetPasswordWithCodeRequest:
+      type: object
+      properties:
+        identifier: { type: string }
+        code: { type: string }
+        newPassword: { type: string, minLength: 8, maxLength: 72 }
+      required: [identifier, code, newPassword]
+
+    CreateUserRequest:
+      type: object
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        identifier: { type: string }
+        displayName: { type: string }
+        teamId:
+          type: string
+          nullable: true
+          description: Required for role supervisor/assignee.
+      required: [role, identifier, displayName]
+
+    CreateUserResponse:
+      type: object
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        tempPassword:
+          type: string
+          description: Shown exactly once. Never emailed, never shown again.
+
+    UpdateUserInput:
+      type: object
+      description: Same shape used by PATCH /users/{id} — see CreateUserRequest's sibling below.
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        isActive: { type: boolean, nullable: true }
+        role:
+          allOf: [{ $ref: "#/components/schemas/Role" }]
+          nullable: true
+          description: Admin-only field. A supervisor sending this at all gets 403.
+
+    ResetPasswordResponse:
+      type: object
+      properties:
+        tempPassword: { type: string }
+
+    WorkItemStatus:
+      type: string
+      enum:
+        - created
+        - assigned
+        - accepted
+        - in_progress
+        - submitted_for_review
+        - verified
+        - flagged
+        - completed
+        - cancelled
+
+    WorkItemPriority:
+      type: string
+      enum: [low, medium, high]
+
+    WorkItem:
+      type: object
+      properties:
+        id: { type: string }
+        referenceCode: { type: string, example: WI-0001 }
+        title: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/WorkItemStatus" }
+        priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        createdByUserId: { type: string }
+        assignedToUserId: { type: string, nullable: true }
+        locationText: { type: string, nullable: true }
+        dueAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CreateWorkItemRequest:
+      type: object
+      properties:
+        title: { type: string }
+        description: { type: string }
+        priority: { $ref: "#/components/schemas/WorkItemPriority" }
+        locationText: { type: string, nullable: true }
+        dueAt: { type: string, format: date-time, nullable: true }
+      required: [title, description, priority]
+
+    UpdateWorkItemRequest:
+      type: object
+      description: Every field optional — only fields present in the body change.
+      properties:
+        title: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        priority:
+          allOf: [{ $ref: "#/components/schemas/WorkItemPriority" }]
+          nullable: true
+        locationText: { type: string, nullable: true }
+        dueAt: { type: string, format: date-time, nullable: true }
+
+    ChangeStatusRequest:
+      type: object
+      properties:
+        toStatus: { $ref: "#/components/schemas/WorkItemStatus" }
+        reason: { type: string, nullable: true }
+      required: [toStatus]
+
+    VerifyRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          nullable: true
+          description: Optional — admin/supervisor can verify with no comment.
+
+    FlagRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          description: Required — a non-empty, non-whitespace note.
+      required: [note]
+
+    StatusHistory:
+      type: object
+      properties:
+        id: { type: string }
+        workItemId: { type: string }
+        fromStatus:
+          allOf: [{ $ref: "#/components/schemas/WorkItemStatus" }]
+          nullable: true
+        toStatus: { $ref: "#/components/schemas/WorkItemStatus" }
+        changedByUserId: { type: string }
+        reason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    AssignmentStatus:
+      type: string
+      enum: [assigned, accepted, declined]
+
+    Assignment:
+      type: object
+      properties:
+        id: { type: string }
+        workItemId: { type: string }
+        assignedByUserId: { type: string }
+        assignedToUserId: { type: string }
+        status: { $ref: "#/components/schemas/AssignmentStatus" }
+        assignedAt: { type: string, format: date-time }
+        respondedAt: { type: string, format: date-time, nullable: true }
+        responseNote: { type: string, nullable: true }
+
+    AssignmentHistory:
+      type: object
+      properties:
+        id: { type: string }
+        workItemId: { type: string }
+        action: { $ref: "#/components/schemas/AssignmentStatus" }
+        actorUserId: { type: string }
+        assignedToUserId: { type: string }
+        note: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    AssignRequest:
+      type: object
+      properties:
+        assignedToUserId: { type: string }
+      required: [assignedToUserId]
+
+    RespondToAssignmentRequest:
+      type: object
+      properties:
+        note: { type: string, nullable: true }
+
+    Team:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    CreateTeamRequest:
+      type: object
+      properties:
+        name: { type: string }
+      required: [name]
+
+    TeamMemberRequest:
+      type: object
+      properties:
+        userId: { type: string }
+      required: [userId]
+
+    Membership:
+      type: object
+      properties:
+        id: { type: string }
+        teamId: { type: string }
+        userId: { type: string }
+        addedByUserId: { type: string }
+        addedAt: { type: string, format: date-time }
+        removedAt: { type: string, format: date-time, nullable: true }
+
+    Supervision:
+      type: object
+      properties:
+        id: { type: string }
+        teamId: { type: string }
+        userId: { type: string }
+        addedByUserId: { type: string }
+        addedAt: { type: string, format: date-time }
+        removedAt: { type: string, format: date-time, nullable: true }
+
+    AttachmentKind:
+      type: string
+      enum:
+        - supporting_document
+        - site_photo
+        - evidence_photo
+        - quote_document
+        - verification_document
+
+    Attachment:
+      type: object
+      properties:
+        id: { type: string }
+        workItemId: { type: string }
+        uploadedByUserId: { type: string }
+        storageUrl: { type: string }
+        mimeType: { type: string }
+        fileSize: { type: integer, format: int64 }
+        kind: { $ref: "#/components/schemas/AttachmentKind" }
+        createdAt: { type: string, format: date-time }
+
+    NotificationKind:
+      type: string
+      enum:
+        - assignment_created
+        - assignment_accepted
+        - evidence_submitted
+        - work_flagged
+        - work_verified
+        - work_completed
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string }
+        recipientUserId: { type: string }
+        workItemId: { type: string }
+        kind: { $ref: "#/components/schemas/NotificationKind" }
+        message: { type: string }
+        readAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
