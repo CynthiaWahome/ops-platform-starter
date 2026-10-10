@@ -925,7 +925,13 @@ func submitWorkItemForReview(t *testing.T, handler http.Handler, assigneeToken s
 	}
 }
 
-func TestAdminFlagsSubmittedWorkItemAndAssigneeSeesFeedback(t *testing.T) {
+// TestFlaggedWorkItemReworkedResubmittedAndReverifiedEndToEnd is OPS-044's
+// flagged/rework e2e proof (the happy path is already proven end to end
+// by TestSupervisorCanRunFullLifecycleThroughRealHTTPHandlers below): flag
+// -> assignee sees the feedback -> reworks -> resubmits -> re-verified.
+// Originally just proved flag + feedback visibility; extended here with
+// the rest of the cycle rather than duplicated into a second test.
+func TestFlaggedWorkItemReworkedResubmittedAndReverifiedEndToEnd(t *testing.T) {
 	t.Parallel()
 
 	handler := newTestRouter(t)
@@ -1006,6 +1012,44 @@ func TestAdminFlagsSubmittedWorkItemAndAssigneeSeesFeedback(t *testing.T) {
 
 	if reworkRec.Code != http.StatusOK {
 		t.Fatalf("expected assignee rework status %d, got %d", http.StatusOK, reworkRec.Code)
+	}
+
+	// OPS-044: the flagged/rework e2e path doesn't stop at rework — it
+	// has to prove the item can actually come back around to a verified
+	// state, the same way the happy path
+	// (TestSupervisorCanRunFullLifecycleThroughRealHTTPHandlers) proves
+	// create through completed. The attachment uploaded before the first
+	// submission still satisfies OPS-031's "at least one attachment"
+	// gate, so resubmitting here needs no second upload.
+	resubmitReq := httptest.NewRequest(http.MethodPatch, "/workitems/"+created+"/status", bytes.NewBufferString(`{"toStatus":"submitted_for_review"}`))
+	resubmitReq.Header.Set("Authorization", "Bearer "+assigneeToken)
+	resubmitReq.Header.Set("Content-Type", "application/json")
+	resubmitRec := httptest.NewRecorder()
+	handler.ServeHTTP(resubmitRec, resubmitReq)
+
+	if resubmitRec.Code != http.StatusOK {
+		t.Fatalf("expected resubmit status %d, got %d: %s", http.StatusOK, resubmitRec.Code, resubmitRec.Body.String())
+	}
+
+	reverifyReq := httptest.NewRequest(http.MethodPost, "/workitems/"+created+"/verify", bytes.NewBufferString(`{"note":"fixed, looks good now"}`))
+	reverifyReq.Header.Set("Authorization", "Bearer "+adminToken)
+	reverifyReq.Header.Set("Content-Type", "application/json")
+	reverifyRec := httptest.NewRecorder()
+	handler.ServeHTTP(reverifyRec, reverifyReq)
+
+	if reverifyRec.Code != http.StatusOK {
+		t.Fatalf("expected re-verify status %d, got %d: %s", http.StatusOK, reverifyRec.Code, reverifyRec.Body.String())
+	}
+
+	var reverified struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(reverifyRec.Body).Decode(&reverified); err != nil {
+		t.Fatalf("expected re-verify response to decode, got error: %v", err)
+	}
+
+	if reverified.Status != "verified" {
+		t.Fatalf("expected final status %q after the flagged/rework/resubmit cycle, got %q", "verified", reverified.Status)
 	}
 }
 
