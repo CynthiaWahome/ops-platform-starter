@@ -268,7 +268,7 @@ paths:
               example:
                 message: invalid identifier, password, or display name
         "404":
-          description: Google OAuth and email auth are both unconfigured — this route does not exist.
+          description: No email provider (Resend or SMTP) is configured — this route does not exist.
         "409":
           description: Identifier already in use.
           content:
@@ -388,14 +388,6 @@ paths:
                   value: { message: invalid or expired code }
                 tooShort:
                   value: { message: new password must be at least 8 characters }
-        "404":
-          description: Identifier does not resolve to any account.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: invalid or expired code
         "429":
           description: 5 wrong attempts reached — locked for 15 minutes.
           content:
@@ -1544,10 +1536,6 @@ components:
         tempPassword:
           type: string
           description: Shown exactly once. Never emailed, never shown again.
-
-    UpdateUserInput:
-      type: object
-      description: Same shape used by PATCH /users/{id} — see CreateUserRequest's sibling below.
 
     UpdateUserRequest:
       type: object
