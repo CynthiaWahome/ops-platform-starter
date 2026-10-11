@@ -3,11 +3,14 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/smtp"
+	"time"
 )
 
 // EmailSender is the seam between OPS-068b's OTP flows and whatever
@@ -18,6 +21,14 @@ import (
 type EmailSender interface {
 	Send(ctx context.Context, to, subject, body string) error
 }
+
+// emailSendTimeout bounds every real send attempt, Resend or SMTP — a
+// review caught that neither sender had one: ResendEmailSender used
+// http.DefaultClient (no Timeout field set) and SMTPEmailSender ignored
+// its ctx argument entirely and used net/smtp.SendMail, which has no
+// deadline at all. Either a hung TLS handshake or an unresponsive mail
+// server could otherwise block a request indefinitely.
+const emailSendTimeout = 10 * time.Second
 
 // resendAPIURL is Resend's REST endpoint. Called directly over HTTPS
 // rather than via their official SDK — one more POST + JSON encode/decode
@@ -36,7 +47,7 @@ type ResendEmailSender struct {
 }
 
 func NewResendEmailSender(apiKey, from string) ResendEmailSender {
-	return ResendEmailSender{apiKey: apiKey, from: from, httpClient: http.DefaultClient}
+	return ResendEmailSender{apiKey: apiKey, from: from, httpClient: &http.Client{Timeout: emailSendTimeout}}
 }
 
 func (s ResendEmailSender) Send(ctx context.Context, to, subject, body string) error {
@@ -93,19 +104,70 @@ func NewSMTPEmailSender(host, port, username, password, from string) SMTPEmailSe
 	return SMTPEmailSender{host: host, port: port, username: username, password: password, from: from}
 }
 
-func (s SMTPEmailSender) Send(_ context.Context, to, subject, body string) error {
-	addr := s.host + ":" + s.port
+// Send is hand-rolled around net/smtp.Client, not the simpler
+// net/smtp.SendMail, specifically so the connection can carry a deadline
+// and honor ctx cancellation — SendMail accepts neither. This still
+// does the same STARTTLS upgrade SendMail does automatically (checked via
+// the server's advertised extensions, required for smtp.gmail.com:587 and
+// most real providers on port 587) — verified live against real Gmail
+// SMTP during this feature's manual testing, so that behavior has to be
+// preserved exactly, not just approximated.
+func (s SMTPEmailSender) Send(ctx context.Context, to, subject, body string) error {
+	deadline := time.Now().Add(emailSendTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
 
-	var auth smtp.Auth
+	dialer := net.Dialer{Deadline: deadline}
+	conn, err := dialer.DialContext(ctx, "tcp", s.host+":"+s.port)
+	if err != nil {
+		return fmt.Errorf("auth: dial smtp server: %w", err)
+	}
+
+	if err := conn.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return fmt.Errorf("auth: set smtp connection deadline: %w", err)
+	}
+
+	client, err := smtp.NewClient(conn, s.host)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("auth: create smtp client: %w", err)
+	}
+	defer client.Close()
+
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: s.host}); err != nil {
+			return fmt.Errorf("auth: smtp starttls: %w", err)
+		}
+	}
+
 	if s.username != "" {
-		auth = smtp.PlainAuth("", s.username, s.password, s.host)
+		if err := client.Auth(smtp.PlainAuth("", s.username, s.password, s.host)); err != nil {
+			return fmt.Errorf("auth: smtp authenticate: %w", err)
+		}
+	}
+
+	if err := client.Mail(s.from); err != nil {
+		return fmt.Errorf("auth: smtp MAIL FROM: %w", err)
+	}
+	if err := client.Rcpt(to); err != nil {
+		return fmt.Errorf("auth: smtp RCPT TO: %w", err)
+	}
+
+	writer, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("auth: smtp DATA: %w", err)
 	}
 
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s\r\n", s.from, to, subject, body)
-
-	if err := smtp.SendMail(addr, auth, s.from, []string{to}, []byte(msg)); err != nil {
-		return fmt.Errorf("auth: send smtp mail: %w", err)
+	if _, err := writer.Write([]byte(msg)); err != nil {
+		writer.Close()
+		return fmt.Errorf("auth: write smtp message: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("auth: close smtp message writer: %w", err)
 	}
 
-	return nil
+	return client.Quit()
 }

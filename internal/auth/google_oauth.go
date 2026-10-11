@@ -81,17 +81,35 @@ func (c OAuth2GoogleClient) Exchange(ctx context.Context, code string) (GoogleId
 		return GoogleIdentity{}, fmt.Errorf("auth: google userinfo returned %d: %s", resp.StatusCode, body)
 	}
 
+	return parseGoogleUserInfo(resp.Body)
+}
+
+// parseGoogleUserInfo is pulled out of Exchange as its own pure function
+// so the validation rules are unit-testable directly against a JSON
+// payload — no real network call, no HTTP mocking needed.
+func parseGoogleUserInfo(body io.Reader) (GoogleIdentity, error) {
 	var payload struct {
-		Subject string `json:"sub"`
-		Email   string `json:"email"`
-		Name    string `json:"name"`
+		Subject       string `json:"sub"`
+		Email         string `json:"email"`
+		EmailVerified bool   `json:"email_verified"`
+		Name          string `json:"name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(body).Decode(&payload); err != nil {
 		return GoogleIdentity{}, fmt.Errorf("auth: decode google userinfo: %w", err)
 	}
 
 	if payload.Subject == "" || payload.Email == "" {
 		return GoogleIdentity{}, fmt.Errorf("auth: google userinfo missing sub or email")
+	}
+
+	// A review caught that this code previously assumed every Google
+	// account has a verified email — not true in general (an email can be
+	// added to a Google account and never confirmed). Service.LoginWithGoogle
+	// sets EmailVerified: true unconditionally on the account it creates,
+	// on the premise that Google already verified it; that premise only
+	// holds when Google's own response says so.
+	if !payload.EmailVerified {
+		return GoogleIdentity{}, fmt.Errorf("auth: google account email is not verified")
 	}
 
 	return GoogleIdentity{

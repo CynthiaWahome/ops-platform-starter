@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,18 +16,54 @@ import (
 
 // fakeEmailSender records every call instead of making a real call to an
 // email provider — the only way these tests can ever see an OTP, since
-// the handler never returns one in a response.
+// the handler never returns one in a response. Mutex-protected because
+// auth.Service.RequestPasswordReset dispatches its Send call from its own
+// goroutine (OPS-068b, closing a timing side-channel) — a concurrent
+// append here without one would be a real data race, not just a
+// theoretical one.
 type fakeEmailSender struct {
+	mu     sync.Mutex
 	bodies []string
 }
 
 func (f *fakeEmailSender) Send(_ context.Context, _, _, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.bodies = append(f.bodies, body)
 	return nil
 }
 
 func (f *fakeEmailSender) last() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	return f.bodies[len(f.bodies)-1]
+}
+
+func (f *fakeEmailSender) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.bodies)
+}
+
+// waitForSendCount blocks until at least n emails have been recorded, or
+// fails the test after a short timeout — needed because
+// RequestPasswordReset's send is dispatched in its own goroutine, so
+// nothing guarantees it has run yet the instant the service call returns.
+func waitForSendCount(t *testing.T, sender *fakeEmailSender, n int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sender.count() >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatalf("expected at least %d email(s) sent within the timeout, got %d", n, sender.count())
 }
 
 func newTestAuthServiceWithEmail(t *testing.T) (auth.Service, *fakeEmailSender) {
@@ -168,6 +205,10 @@ func TestResetPasswordHandlerSucceedsWithCorrectCode(t *testing.T) {
 		t.Fatalf("expected reset request to succeed, got error: %v", err)
 	}
 
+	// Waiting for 2, not 1 — the signup above already sent the
+	// verification email synchronously; this is the 2nd, dispatched
+	// asynchronously by RequestPasswordReset.
+	waitForSendCount(t, sender, 2)
 	code := extractOTPFromBody(sender.last())
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/reset-password",

@@ -136,6 +136,35 @@ func TestRequestLoggerLevelsByStatusCode(t *testing.T) {
 	}
 }
 
+// TestStatusRecorderUnwrapLetsResponseControllerReachFlush proves the
+// actual point of Unwrap: http.ResponseController — the real-world
+// consumer of this method — can reach straight through statusRecorder to
+// the underlying writer's Flush, even though statusRecorder itself never
+// implements http.Flusher directly (embedding the http.ResponseWriter
+// interface only promotes its own 3 methods, not optional ones like
+// Flusher or Hijacker).
+func TestStatusRecorderUnwrapLetsResponseControllerReachFlush(t *testing.T) {
+	withCapturedLogs(t) // keep this test's own log line out of stderr noise
+
+	flushed := false
+
+	handler := RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("expected Flush to reach the underlying writer through Unwrap, got error: %v", err)
+			return
+		}
+		flushed = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	rec := httptest.NewRecorder() // *httptest.ResponseRecorder implements http.Flusher
+	handler.ServeHTTP(rec, req)
+
+	if !flushed {
+		t.Fatal("expected the handler to reach Flush successfully")
+	}
+}
+
 func TestConfigureDefaultLoggerDevelopmentIsVerboseTextAtDebug(t *testing.T) {
 	previous := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previous) })
