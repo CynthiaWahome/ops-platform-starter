@@ -97,6 +97,10 @@ DATABASE_URL="postgres://postgres:postgres@localhost:5432/ops_platform?sslmode=d
 
 Setting `DATABASE_URL` is what opts a run into real, restart-surviving persistence — the schema migrates itself on startup. `.env.example` documents every other configurable value (bootstrap users for each of the four roles, JWT secret, etc.).
 
+## API docs
+
+With the server running, open `http://localhost:8080/docs` — a full OpenAPI 3.x spec covering every route, including request/response shapes, role requirements, and realistic error responses (not just happy paths), rendered with Swagger UI. Both the spec and Swagger UI's assets are vendored into the binary (`go:embed`, no external CDN), so this works offline the same way everything else in this starter does.
+
 ## Repository structure
 
 ```text

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ops-platform-starter API docs</title>
+  <link rel="icon" href="/docs/favicon-32x32.png">
+  <link rel="stylesheet" href="/docs/swagger-ui.css">
+  <style>
+    body { margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <!--
+    Both scripts and the stylesheet above are served from this same
+    process (see internal/http/docs/docs.go), vendored into the binary
+    via go:embed — no external CDN dependency, consistent with the
+    "minimal dependency surface" stance in README.md.
+  -->
+  <script src="/docs/swagger-ui-bundle.js"></script>
+  <script src="/docs/swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.onload = function () {
+      window.ui = SwaggerUIBundle({
+        url: "/docs/openapi.yaml",
+        dom_id: "#swagger-ui",
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: "StandaloneLayout"
+      });
+    };
+  </script>
+</body>
+</html>
